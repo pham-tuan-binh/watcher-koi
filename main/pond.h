@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /// Hard limits on how much the pond will simulate at once.
-#define POND_MAX_KOI   8
+#define POND_MAX_KOI   12
 #define POND_MAX_PADS  12
 #define POND_MAX_MOTES 16
 

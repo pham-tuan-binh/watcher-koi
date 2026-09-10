@@ -100,22 +100,40 @@ static lv_color_t s_pal[MAT_COUNT * LEVELS];
 
 // --- Koi sprite ---
 // Body space: x runs tail (0) -> nose (KOI_W - 1), y is across the body.
-// 'm' main colour, 'a' accent patch, 'f' tail, '.' water.
+// 'm' main colour, 'a' marking, 'f' fin, '.' water.
+//
+// The silhouette follows how a koi is actually built: fusiform, narrow at
+// the snout, broadest across the shoulder a quarter of the way back, then
+// tapering the whole length of the body to a narrow caudal peduncle. A fish
+// widest at its middle reads as a rugby ball, which is the fault koi judges
+// mark down.
+//
+// The tail is a flat blade, not a fan. A fish's caudal fin stands vertical
+// and beats side to side, so from directly above you are looking at its
+// edge — the fork everyone draws is a side-on view and is not visible from
+// up here.
+//
+// This is only the blank. The markings are not in the art: each koi gets
+// its own in koi_pattern(), because every koi wearing the same patch in the
+// same place reads as a stripe down the fish.
 
-#define KOI_W 11
-#define KOI_H 7
-#define KOI_PIVOT 5    /* body-space x the koi turns about */
-#define KOI_REACH 8    /* body bounding box half-size, world pixels */
-#define KOI_GLOW_R 10  /* halo cast on the surrounding water */
+#define KOI_W 15
+#define KOI_H 9
+#define KOI_PIVOT 7    /* body-space x the koi turns about */
+#define KOI_REACH 9    /* body bounding box half-size, world pixels */
+#define KOI_GLOW_R 12  /* halo cast on the surrounding water */
+#define KOI_BODY_X0 4  /* first body column; everything behind it is tail */
 
 static const char *const KOI_ART[KOI_H] = {
-    "...........",
-    "ff.........",
-    "fffmmmaamm.",
-    "ffmmmaaammm",
-    "fffmmmaamm.",
-    "ff.........",
-    "...........",
+    "...............",
+    "...............",
+    ".........mmmm..",
+    "ffff.mmmmmmmmm.",
+    "ffffmmmmmmmmmmm",
+    "ffff.mmmmmmmmm.",
+    ".........mmmm..",
+    "...............",
+    "...............",
 };
 
 static uint8_t s_koi_sprite[KOI_H][KOI_W];
@@ -187,6 +205,7 @@ typedef struct {
     uint8_t type;
     uint16_t boost;    /* frames left chasing the last tap */
     int16_t tx, ty;    /* what the koi is swimming towards */
+    uint8_t skin[KOI_H][KOI_W];   /* this fish's own markings */
 } koi_t;
 
 typedef struct {
@@ -369,6 +388,7 @@ static void ripples_update(void)
 }
 
 /// One ring per ripple: a lit crest with a dark trough trailing behind it.
+/// Kept subtle: a suggestion of a ring on the water, not a flash.
 static void ripples_draw(void)
 {
     for (int i = 0; i < MAX_RIPPLES; i++) {
@@ -420,11 +440,11 @@ static void ripples_draw(void)
                 /* (d2 - r2) / 2r approximates the signed distance to the ring */
                 int k = (d2 - r2) / den;
                 if (k >= -1 && k <= 1)
-                    light_add(vx, vy, str * 34);
+                    light_add(vx, vy, str * 16);
                 else if (k == -2 || k == 2)
-                    light_add(vx, vy, str * 12);
+                    light_add(vx, vy, str * 6);
                 else if (k > 2 && str >= 2)
-                    light_add(vx, vy, -22);
+                    light_add(vx, vy, -10);
             }
         }
     }
@@ -585,6 +605,70 @@ static void draw_pad(const pad_t *p)
 
 // --- Koi ---
 
+/**
+ * Give one koi its own markings.
+ *
+ * Koi are not striped. A pattern is a handful of plates -- large, irregular
+ * groupings of colour -- spread along the whole length of the fish rather
+ * than bunched at one end, wandering off the spine instead of mirroring it.
+ * A lone stray pixel of colour is the fault called tobi hi, so any marking
+ * that ends up by itself is rubbed out again.
+ */
+static void koi_pattern(koi_t *k)
+{
+    memcpy(k->skin, s_koi_sprite, sizeof k->skin);
+
+    /* a few come out plain, the way a single-colour ogon does */
+    if (rnd(6) == 0)
+        return;
+
+    int plates = 2 + (int)rnd(3);
+    int span = (KOI_W - 1) - KOI_BODY_X0;
+
+    for (int p = 0; p < plates; p++) {
+        /* one plate per band, so the markings run the length of the fish */
+        int bx0 = KOI_BODY_X0 + (span * p) / plates;
+        int bx1 = KOI_BODY_X0 + (span * (p + 1)) / plates;
+        if (bx1 <= bx0)
+            continue;
+
+        int cx = bx0 + (int)rnd((uint32_t)(bx1 - bx0));
+        int cy = KOI_H / 2 + (int)rnd(3) - 1;      /* off the spine, either way */
+        int rx = 1 + (int)rnd(2);
+        int ry = 1 + (int)rnd(2);
+        int r2 = rx * rx * ry * ry;
+
+        for (int y = cy - ry; y <= cy + ry; y++) {
+            if (y < 0 || y >= KOI_H)
+                continue;
+            for (int x = cx - rx; x <= cx + rx; x++) {
+                if (x < 0 || x >= KOI_W)
+                    continue;
+                if (k->skin[y][x] != 1)            /* body only, never a fin */
+                    continue;
+                int dx = x - cx, dy = y - cy;
+                /* jittered edge, so a plate is never a clean ellipse */
+                if (dx * dx * ry * ry + dy * dy * rx * rx <= r2 + (int)rnd(3) - 1)
+                    k->skin[y][x] = 2;
+            }
+        }
+    }
+
+    /* no tobi hi: a marking with nothing next to it is noise, not a plate */
+    for (int y = 0; y < KOI_H; y++) {
+        for (int x = 0; x < KOI_W; x++) {
+            if (k->skin[y][x] != 2)
+                continue;
+            bool joined = (y > 0          && k->skin[y - 1][x] == 2)
+                       || (y < KOI_H - 1  && k->skin[y + 1][x] == 2)
+                       || (x > 0          && k->skin[y][x - 1] == 2)
+                       || (x < KOI_W - 1  && k->skin[y][x + 1] == 2);
+            if (!joined)
+                k->skin[y][x] = 1;
+        }
+    }
+}
+
 static void koi_reset(koi_t *k, int i)
 {
     int a = (int)rnd(256);
@@ -597,6 +681,7 @@ static void koi_reset(koi_t *k, int i)
     k->turn = 0;
     k->type = (uint8_t)(i % 3);
     k->boost = 0;
+    koi_pattern(k);
 }
 
 static void koi_update(koi_t *k)
@@ -678,7 +763,7 @@ static void draw_koi_underglow(const koi_t *k)
         return;
 
     int cx = wx - s_ox, cy = wy - s_oy;
-    const int r = 7;
+    const int r = 9;
     const int r2 = r * r;
 
     for (int vy = cy - r; vy <= cy + r; vy++) {
@@ -728,14 +813,14 @@ static void draw_koi(const koi_t *k)
             if (bx < 0 || bx >= KOI_W)
                 continue;
 
-            /* the tail flicks, the head barely moves; keep the swing to one
-             * pixel so the tail never tears away from the body */
-            if (bx < 7)
-                by -= (wig_amp * (7 - bx)) >> 10;
+            /* the tail flicks, the head barely moves; the swing grows by
+             * well under a pixel per column so the tail never tears away */
+            if (bx < 10)
+                by -= (wig_amp * (10 - bx)) >> 10;
             if (by < 0 || by >= KOI_H)
                 continue;
 
-            uint8_t v = s_koi_sprite[by][bx];
+            uint8_t v = k->skin[by][bx];
             if (!v)
                 continue;
 

@@ -55,7 +55,7 @@ The same instant at three of the six detents. The pond is a fixed world and the 
   <img src="docs/drift.png" width="900" alt="the same pond forty seconds apart, four times">
 </p>
 
-The same pond, roughly forty seconds apart each time. Three koi and five lily pads are being simulated in every one of those frames — but the koi roam past the rim and the pads drift, and everything dims with distance from the middle, so the number you can actually *count* moves around. Sometimes five pads, sometimes four; sometimes three fish, sometimes one and a faint shape at the edge.
+The same pond, roughly forty seconds apart each time. These were rendered with three koi and five lily pads — the firmware now starts with eight koi — and that whole count is being simulated in every one of the frames, but the koi roam past the rim and the pads drift, and everything dims with distance from the middle, so the number you can actually *count* moves around. Sometimes five pads, sometimes four; sometimes three fish, sometimes one and a faint shape at the edge.
 
 Counts are a runtime number, not a compile-time one:
 

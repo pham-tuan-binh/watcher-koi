@@ -10,8 +10,8 @@ menu "Mochi"
 
     config MOCHI_POND_KOI_COUNT
         int "Number of koi in the pond"
-        range 1 8
-        default 3
+        range 1 12
+        default 8
         help
             How many koi to simulate at boot. They cycle through three
             colourways, and roam past the rim, so the number visible on
