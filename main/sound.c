@@ -32,6 +32,7 @@
  */
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -133,6 +134,7 @@ static float s_lpa, s_lpb;
 
 static int16_t s_block[BLOCK];
 static QueueHandle_t s_queue;
+static atomic_bool s_muted;
 
 /// Exponential per-sample multiplier that decays to 1/e in `ms`.
 static float decay_ms_k(float ms)
@@ -274,7 +276,16 @@ static void audio_task(void *arg)
             voice_start(kind);
 
         bool fade = false;
-        if (voices_active()) {
+        if (atomic_load(&s_muted)) {
+            /* recording: drop what is sounding rather than hand the mic a
+             * plop, and take the reverb tail with it */
+            for (int i = 0; i < MAX_VOICES; i++)
+                s_voices[i].active = false;
+            if (tail > 0) {
+                tail = 0;
+                fade = true;
+            }
+        } else if (voices_active()) {
             tail = TAIL_BLOCKS;
         } else if (--tail <= 0) {
             tail = 0;
@@ -313,7 +324,12 @@ void sound_init(void)
 
 void sound_play(sound_t which)
 {
-    if (!s_queue)
+    if (!s_queue || atomic_load(&s_muted))
         return;
     xQueueSend(s_queue, &which, 0);
+}
+
+void sound_set_muted(bool muted)
+{
+    atomic_store(&s_muted, muted);
 }

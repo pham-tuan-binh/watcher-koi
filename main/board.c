@@ -44,6 +44,30 @@ static void touch_i2c_bus_recover(void)
     esp_rom_delay_us(5);
 }
 
+/**
+ * Park the AI chip's chip-select high.
+ *
+ * The SD card (GPIO 46) and the Himax vision chip (GPIO 21) share SPI2, one
+ * CS each. The BSP drives the card's CS high before it talks to the vision
+ * chip, but nothing does the reverse — so on a board like this one, which
+ * never brings the vision chip up, its CS is left floating with the chip
+ * powered. The card's own clock edges then select it, the Himax drives MISO
+ * against the card, and every read comes back with a CRC error. Park it high
+ * once at boot and the card has the bus to itself.
+ */
+static void ai_chip_deselect(void)
+{
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << BSP_SSCMA_CLIENT_SPI_CS,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+    gpio_set_level(BSP_SSCMA_CLIENT_SPI_CS, 1);
+}
+
 void board_init(void)
 {
     ESP_LOGI(TAG, "Initializing board");
@@ -53,6 +77,7 @@ void board_init(void)
 
     // IO expander first — restores power rails after deep sleep
     bsp_io_expander_init();
+    ai_chip_deselect();
     ESP_ERROR_CHECK(bsp_codec_init());
 
     // Recover touch I2C bus before LVGL tries to talk to the SPD2010
@@ -103,6 +128,13 @@ void board_set_btn_long_press_cb(void (*cb)(void))
     lv_indev_t *enc = find_encoder();
     if (!enc) { ESP_LOGE(TAG, "No encoder found"); return; }
     lvgl_port_encoder_btn_register_event_cb(enc, BUTTON_LONG_PRESS_UP, btn_cb_wrapper, cb);
+}
+
+void board_set_btn_click_cb(void (*cb)(void))
+{
+    lv_indev_t *enc = find_encoder();
+    if (!enc) { ESP_LOGE(TAG, "No encoder found"); return; }
+    lvgl_port_encoder_btn_register_event_cb(enc, BUTTON_SINGLE_CLICK, btn_cb_wrapper, cb);
 }
 
 // --- Knob rotation ---

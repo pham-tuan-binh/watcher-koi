@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,6 +15,10 @@ void screen_set_tap_cb(void (*cb)(void));
 /// Report a knob detent (+1 clockwise, -1 anti) to zoom the pond. Safe to
 /// call from any task; the zoom is applied from the LVGL task.
 void screen_knob(int dir);
+
+/// Turn the pond to autumn, or back — what recording mode looks like. Safe
+/// to call from any task; applied from the LVGL task.
+void screen_set_autumn(bool on);
 
 #ifdef __cplusplus
 }

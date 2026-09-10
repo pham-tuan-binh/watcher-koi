@@ -1,4 +1,5 @@
 #include <stdatomic.h>
+#include <stdbool.h>
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -11,13 +12,15 @@
 
 static const char *TAG = "screen";
 
-#define KNOB_POLL_MS 50
+#define POLL_MS 50
 
 static void (*s_tap_cb)(void);
 
-/// Knob events arrive on the knob's timer, so detents are only accumulated
-/// there and applied from the LVGL task, which owns the pond's state.
+/// Knob events and the recorder both arrive on other tasks, so they are
+/// only parked here and picked up from the LVGL task, which owns the pond's
+/// state. -1 in the season request means nothing is waiting.
 static atomic_int s_knob_detents;
+static atomic_int s_season_req = -1;
 
 /// Give LVGL a frame or two to push the first pond render out to the panel
 /// before the backlight comes up, so the display never flashes garbage.
@@ -27,14 +30,17 @@ static void backlight_cb(lv_timer_t *t)
     lv_timer_del(t);
 }
 
-static void knob_poll_cb(lv_timer_t *t)
+static void poll_cb(lv_timer_t *t)
 {
     (void)t;
+
     int detents = atomic_exchange(&s_knob_detents, 0);
-    if (detents == 0)
-        return;
-    if (pond_zoom(detents))
+    if (detents != 0 && pond_zoom(detents))
         sound_play(SOUND_TICK);
+
+    int season = atomic_exchange(&s_season_req, -1);
+    if (season >= 0)
+        pond_set_autumn(season != 0);
 }
 
 static void screen_press_cb(lv_event_t *e)
@@ -65,7 +71,7 @@ void screen_init(void)
 
     pond_init(scr);
     lv_timer_create(backlight_cb, 200, NULL);
-    lv_timer_create(knob_poll_cb, KNOB_POLL_MS, NULL);
+    lv_timer_create(poll_cb, POLL_MS, NULL);
 
     lvgl_port_unlock();
 
@@ -80,4 +86,9 @@ void screen_set_tap_cb(void (*cb)(void))
 void screen_knob(int dir)
 {
     atomic_fetch_add(&s_knob_detents, dir);
+}
+
+void screen_set_autumn(bool on)
+{
+    atomic_store(&s_season_req, on ? 1 : 0);
 }

@@ -18,6 +18,11 @@ void board_set_btn_release_cb(void (*cb)(void));
 /// Register a callback for knob button long-press release.
 void board_set_btn_long_press_cb(void (*cb)(void));
 
+/// Register a callback for a single click of the knob button: a press and
+/// release that was not held long enough to be a long press. It arrives a
+/// short click window after the release, once no second click can follow.
+void board_set_btn_click_cb(void (*cb)(void));
+
 /// Register a callback for knob rotation. `dir` is +1 clockwise, -1 anti.
 /// Runs from the knob's own timer context, not the LVGL task.
 void board_set_knob_cb(void (*cb)(int dir));

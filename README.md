@@ -4,7 +4,7 @@
   <img src="docs/pond.gif" width="412" alt="a pixel koi pond, tapped, rings spreading out">
 </p>
 
-A pixel koi pond for the [SenseCAP Watcher](https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html). Dark water, glowing rings, koi that come over when you tap the glass.
+A pixel koi pond for the [SenseCAP Watcher](https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html). Dark water, glowing rings, koi that come over when you tap the glass. Click the knob and it turns to autumn and records the room.
 
 Nothing is loaded from storage. There are no image assets and no audio assets — every frame is simulated and every sound is synthesised, so the firmware is the whole thing.
 
@@ -14,7 +14,7 @@ Nothing is loaded from storage. There are no image assets and no audio assets �
 - A USB-C cable
 - A computer with [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/) v5.4+ installed
 
-No SD card needed.
+A microSD card, but only if you want to record — everything else runs without one.
 
 ❤️ **If you want to buy a SenseCap Watcher, consider buying with the link or coupon above**. It's an affiliate link so I'll get a small percentage of your order as appreciation ^^
 
@@ -35,11 +35,33 @@ idf.py flash monitor
 | --- | --- |
 | **Tap the screen** | A ripple lands where your finger did, with a wet plop. Three rings spread out and every koi swims over to see what fell in. |
 | **Turn the knob** | Zoom, six steps. Wide open you get the whole pond; closer in the camera picks a koi and drifts after it. |
+| **Click the button** | The pond turns to autumn and starts recording. Click again to save the WAV to the card. |
 | **Press the button** | Wakes it from sleep. |
-| **Long-press the button** | Straight to deep sleep. |
-| **Do nothing for 5 minutes** | Deep sleep on its own. |
+| **Long-press the button** | Straight to deep sleep, closing any recording on the way out. |
+| **Do nothing for 5 minutes** | Deep sleep on its own — unless it is recording, which is not being idle. |
 
 Left alone it keeps going: the koi wander, the lily pads drift, one of the fish noses the surface every so often, and every now and then something falls in over by the far bank.
+
+## Recording
+
+Click the knob button and the pond turns: the water drops to dusk, the lily pads rust over, the dark goes warm, and every koi comes up red. That is the Watcher listening to the room. Click again and the pond cools back to green — and a WAV file is sitting on the card.
+
+The turn is eased over about a second and a third, on a smoothstep, with a ring going out across the water as it starts, so the season arrives as something happening to the pond rather than a palette being swapped underneath it. Nothing in the simulation knows it happened. Colour in this pond is only ever `ramp[material][light]`, so autumn is a second table of fully-lit colours crossfaded into the first — 84 ramp entries rebuilt on the frames where it moves, which is nothing next to a frame of water:
+
+```c
+void pond_set_autumn(bool on);
+```
+
+**The pond goes silent while it records.** The Watcher's mic and its speaker are millimetres apart, so a plop played during a recording is a plop *in* the recording — every voice is dropped and anything mid-ring is faded out inside one 16 ms block. A pond that stops talking the moment it starts listening also happens to be a clearer signal than any icon would be, so the two wants agree.
+
+Recordings land in `/POND` on the card, numbered `REC00001.WAV` upwards — 16 kHz mono 16-bit, the codec's native rate, which is about 2 MB a minute. The card is mounted on the first click rather than at boot, so a Watcher with no card in it costs nothing and one pushed in later just works. No card, and a click does nothing at all: the pond only turns red once a file is actually open, so the colour on the glass is the recording's own state and never a guess at it.
+
+A few things in [`main/recorder.c`](main/recorder.c) worth knowing:
+
+- **Two tasks, with a ring between them.** 32 KB/s is nothing for a card, but latency is: a FAT write can stall for tens of milliseconds allocating a cluster, and the I2S input only has about 90 ms of DMA behind it. One task that read a chunk and then wrote it would drop samples on any card having a bad day. So a reader does nothing but pull from the mic, a writer empties whatever has piled up, and the ring between them is four seconds deep in PSRAM. The reader outranks the writer, because a late write is absorbed and a late read is a hole.
+- **The vision chip has to be told to let go of the bus.** The card and the Himax share SPI2 with a chip-select each. The BSP parks the card's CS high before it talks to the vision chip, and nothing does the reverse — so on a build like this one, which never brings the Himax up, its CS floats while the chip sits there powered: the card's own clock edges select it, it drives MISO against the card, and every read comes back `data CRC failed`. `board_init()` parks it high once and the card has the bus to itself.
+- **The header is patched on the way out.** WAV wants its two sizes at the front of the file and neither is known until the end, so it goes down as zeros and is rewritten when the file closes.
+- **It always closes the file.** A long press finishes the recording and waits for it before cutting power, the inactivity timeout will not fire while a recording is running, and a recording nobody comes back to stop saves itself at `MOCHI_REC_MAX_SEC` (ten minutes by default).
 
 ## Zoom
 
@@ -122,7 +144,8 @@ The audio task only streams while something is sounding, so silence costs nothin
 | Option | Default | |
 | --- | --- | --- |
 | `MOCHI_DEEP_SLEEP_TIMEOUT_SEC` | 300 | Idle seconds before deep sleep |
-| `MOCHI_POND_KOI_COUNT` | 3 | Koi simulated (max 8) |
+| `MOCHI_REC_MAX_SEC` | 600 | Longest recording before it saves itself |
+| `MOCHI_POND_KOI_COUNT` | 8 | Koi simulated (max 12) |
 | `MOCHI_POND_LILY_COUNT` | 5 | Lily pads simulated (max 12) |
 | `MOCHI_POND_MOTE_COUNT` | 7 | Drifting motes (max 16) |
 

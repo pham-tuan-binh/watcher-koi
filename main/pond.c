@@ -21,6 +21,11 @@
  * time one. They are free to roam past the rim, and everything fades out
  * with distance from the middle of the pond, so the count you can see
  * drifts either side of the count being simulated.
+ *
+ * Because colour is only ever a lookup, the pond has a second set of ramps
+ * -- an autumn one, with red koi, worn while the Watcher is recording --
+ * and turning the season is a crossfade between the two tables. The
+ * simulation never finds out.
  */
 
 #include <math.h>
@@ -97,6 +102,91 @@ static const uint8_t GLOW_RGB[3]  = { 165, 225, 235 };
 static const uint16_t LEVEL_MIX[LEVELS] = { 26, 56, 100, 150, 205, 256 };
 
 static lv_color_t s_pal[MAT_COUNT * LEVELS];
+
+// --- Season ---
+//
+// The pond keeps two palettes: the blue-green cave it normally lives in,
+// and an autumn one it wears while the Watcher is listening. Colour only
+// ever happens in the ramps, so turning the season turns the water, the
+// koi, the pads, the rings and the light in one go -- and every koi comes
+// out red, which is the point of it.
+
+static const uint8_t AUTUMN_RGB[MAT_COUNT][3] = {
+    { 104,  84,  76 },                                   /* dusk on brown  */
+    { 146,  86,  38 }, { 232, 164,  76 }, { 255, 214, 150 },
+    { 238,  48,  36 }, { 255, 168, 104 }, { 172,  34,  28 },
+    { 212,  26,  40 }, { 255, 140,  96 }, { 150,  20,  30 },
+    { 250,  74,  34 }, { 255, 186, 120 }, { 184,  40,  24 },
+    { 255, 204, 148 },                                   /* ember mote     */
+};
+
+/* Autumn dark is warm, and what glows over it is lantern rather than moon. */
+static const uint8_t AUTUMN_NIGHT_RGB[3] = { 15, 7, 6 };
+static const uint8_t AUTUMN_GLOW_RGB[3]  = { 255, 194, 126 };
+
+#define SEASON_STEP 8      /* 256/8 frames to turn: a second and a third */
+#define AUTUMN_DIM  22     /* dusk takes this much off the ambient water */
+
+static int s_season;       /* 0 = the pond as it lives, 256 = full autumn */
+static int s_season_to;
+static int s_season_mix;   /* the eased season the ramps were built for */
+
+static uint8_t mix(uint8_t a, uint8_t b, int t)
+{
+    return (uint8_t)((a * (256 - t) + b * t) >> 8);
+}
+
+/// Rebuild every ramp with the season t/256 of the way into autumn.
+static void palette_build(int t)
+{
+    uint8_t night[3], glow[3];
+    for (int c = 0; c < 3; c++) {
+        night[c] = mix(NIGHT_RGB[c], AUTUMN_NIGHT_RGB[c], t);
+        glow[c] = mix(GLOW_RGB[c], AUTUMN_GLOW_RGB[c], t);
+    }
+
+    for (int m = 0; m < MAT_COUNT; m++) {
+        uint8_t base[3];
+        for (int c = 0; c < 3; c++)
+            base[c] = mix(MAT_RGB[m][c], AUTUMN_RGB[m][c], t);
+
+        for (int l = 0; l < LEVELS; l++) {
+            int k = LEVEL_MIX[l];
+            uint8_t r = mix(night[0], base[0], k);
+            uint8_t g = mix(night[1], base[1], k);
+            uint8_t b = mix(night[2], base[2], k);
+            if (l == LEVELS - 1) {
+                /* brightest step picks up a little of the glow's own colour */
+                r = mix(r, glow[0], 36);
+                g = mix(g, glow[1], 36);
+                b = mix(b, glow[2], 36);
+            }
+            s_pal[m * LEVELS + l] = lv_color_make(r, g, b);
+        }
+    }
+}
+
+/// Smoothstep on 0..256, so the turn eases in and out rather than starting
+/// and stopping dead.
+static int season_ease(int s)
+{
+    return (s * s * (768 - 2 * s)) >> 16;
+}
+
+/// Carry the season on by a frame, rebuilding the ramps if it moved. Eighty
+/// four entries is nothing next to a frame of water.
+static void season_step(void)
+{
+    if (s_season == s_season_to)
+        return;
+
+    s_season += (s_season < s_season_to) ? SEASON_STEP : -SEASON_STEP;
+    if (s_season < 0) s_season = 0;
+    if (s_season > 256) s_season = 256;
+
+    s_season_mix = season_ease(s_season);
+    palette_build(s_season_mix);
+}
 
 // --- Koi sprite ---
 // Body space: x runs tail (0) -> nose (KOI_W - 1), y is across the body.
@@ -332,6 +422,7 @@ static void draw_water(void)
     int a2 = -2 * (int)s_frame;
     int a3 = 3 * (int)s_frame;
     const int r2max = POND_R * POND_R;
+    const int amb = AMBIENT_CORE - ((AUTUMN_DIM * s_season_mix) >> 8);
 
     for (int vy = 0; vy < s_gh; vy++) {
         int y = s_oy + vy;
@@ -351,7 +442,7 @@ static void draw_water(void)
 
             /* light drops off towards the rim: the pond edge is nearly black,
              * with a slight lean towards the upper left */
-            int l = AMBIENT_CORE - (AMBIENT_CORE * d2) / r2max + (w >> 4)
+            int l = amb - (amb * d2) / r2max + (w >> 4)
                   - (dx + dy) / 3;
             if (l < 0) l = 0;
 
@@ -947,6 +1038,7 @@ static void blit(void)
 static void pond_step(void)
 {
     s_frame++;
+    season_step();
 
     if (s_koi_count > 0 && --s_next_surface == 0) {
         /* a koi nosing the surface somewhere */
@@ -1003,30 +1095,6 @@ static void frame_cb(lv_timer_t *t)
 }
 
 // --- Setup ---
-
-static uint8_t mix(uint8_t a, uint8_t b, int t)
-{
-    return (uint8_t)((a * (256 - t) + b * t) >> 8);
-}
-
-static void palette_init(void)
-{
-    for (int m = 0; m < MAT_COUNT; m++) {
-        for (int l = 0; l < LEVELS; l++) {
-            int t = LEVEL_MIX[l];
-            uint8_t r = mix(NIGHT_RGB[0], MAT_RGB[m][0], t);
-            uint8_t g = mix(NIGHT_RGB[1], MAT_RGB[m][1], t);
-            uint8_t b = mix(NIGHT_RGB[2], MAT_RGB[m][2], t);
-            if (l == LEVELS - 1) {
-                /* brightest step picks up a little of the glow's own colour */
-                r = mix(r, GLOW_RGB[0], 36);
-                g = mix(g, GLOW_RGB[1], 36);
-                b = mix(b, GLOW_RGB[2], 36);
-            }
-            s_pal[m * LEVELS + l] = lv_color_make(r, g, b);
-        }
-    }
-}
 
 static void dither_init(void)
 {
@@ -1097,7 +1165,7 @@ void pond_get_population(int *koi, int *pads, int *motes)
 void pond_init(lv_obj_t *parent)
 {
     trig_init();
-    palette_init();
+    palette_build(0);
     dither_init();
     sprite_init();
 
@@ -1146,6 +1214,18 @@ void pond_tap(lv_coord_t x, lv_coord_t y)
         s_koi[i].ty = (int16_t)wy;
         s_koi[i].boost = (uint16_t)(70 + rnd(30));
     }
+}
+
+void pond_set_autumn(bool on)
+{
+    int to = on ? 256 : 0;
+    if (to == s_season_to)
+        return;
+    s_season_to = to;
+
+    /* a ring out from wherever you are looking, so the turn reads as
+     * something happening to the pond rather than a palette swap */
+    ripple_spawn((int)(s_cam_x >> 8), (int)(s_cam_y >> 8), 0, RIPPLE_LIFE);
 }
 
 bool pond_zoom(int delta)

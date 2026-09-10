@@ -8,6 +8,16 @@ menu "Mochi"
             Seconds of inactivity before the device enters deep sleep.
             Default is 300 (5 minutes).
 
+    config MOCHI_REC_MAX_SEC
+        int "Maximum recording length (seconds)"
+        range 5 3600
+        default 600
+        help
+            A click of the knob button starts recording to the SD card and
+            the next click saves it. This is the backstop for a recording
+            nobody comes back to stop: it is closed and saved on its own
+            once it reaches this length. 16 kHz mono is about 2 MB a minute.
+
     config MOCHI_POND_KOI_COUNT
         int "Number of koi in the pond"
         range 1 12

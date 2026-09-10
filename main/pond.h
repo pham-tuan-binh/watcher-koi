@@ -32,6 +32,11 @@ void pond_set_population(int koi, int pads, int motes);
 /// Read back what is currently being simulated. Any pointer may be NULL.
 void pond_get_population(int *koi, int *pads, int *motes);
 
+/// Turn the pond's season. Autumn dims the water, warms the dark and puts
+/// every koi in red; the change is eased over about a second and a ring
+/// goes out across the pond as it starts. Call it as often as you like.
+void pond_set_autumn(bool on);
+
 #ifdef __cplusplus
 }
 #endif

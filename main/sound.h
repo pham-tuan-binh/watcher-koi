@@ -18,6 +18,11 @@ void sound_init(void);
 /// Queue a sound. Non-blocking; overlapping sounds are mixed.
 void sound_play(sound_t which);
 
+/// Silence the pond. Muted, queued sounds are dropped and anything already
+/// sounding is faded out within a block — the speaker is millimetres from
+/// the mic, so a recording needs the pond to stop talking over it.
+void sound_set_muted(bool muted);
+
 #ifdef __cplusplus
 }
 #endif
