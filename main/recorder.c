@@ -1,7 +1,7 @@
 /**
  * Recording the room the pond sits in, onto the SD card.
  *
- * The mic gives 16 kHz mono, which is 32 KB/s — nothing at all for a card.
+ * The mic gives 16 kHz mono, which is 32 KB/s, nothing at all for a card.
  * The catch is latency, not throughput: the card is on SPI2 and a FAT write
  * can stall for tens of milliseconds while a cluster gets allocated, while
  * the I2S input only has about 90 ms of DMA sitting behind it. One task
@@ -15,8 +15,8 @@
  *
  * The speaker is muted for the length of a recording. The Watcher's mic and
  * its speaker are millimetres apart, so a plop played while recording is a
- * plop *in* the recording — and a pond that falls silent the moment it
- * starts listening says what is going on better than any icon could.
+ * plop *in* the recording. A pond that falls silent the moment it starts
+ * listening says what is going on better than any icon could.
  *
  * WAV wants its two sizes in a header at the front of the file, and neither
  * is known until the end, so the header goes down as zeros and is patched
@@ -215,7 +215,7 @@ static void reader_task(void *arg)
 static void record(void)
 {
     if (!sd_ready()) {
-        ESP_LOGW(TAG, "No card in the slot — nothing to record onto");
+        ESP_LOGW(TAG, "No card in the slot, nothing to record onto");
         atomic_store(&s_want, false);
         return;
     }
@@ -243,7 +243,7 @@ static void record(void)
         if (n == 0)
             continue;
         if (fwrite(s_buf, 1, n, s_file) != n) {
-            ESP_LOGE(TAG, "Write failed — card full or gone");
+            ESP_LOGE(TAG, "Write failed, card full or gone");
             card_gave_up = true;
             break;
         }
@@ -281,7 +281,7 @@ static void record(void)
     xSemaphoreGive(s_done);
 
     unsigned ms = (unsigned)(total * 1000 / REC_BYTES_PER_SEC);
-    ESP_LOGI(TAG, "Saved %s — %u.%us, %u bytes%s", s_path, ms / 1000,
+    ESP_LOGI(TAG, "Saved %s: %u.%us, %u bytes%s", s_path, ms / 1000,
              (ms % 1000) / 100, (unsigned)total,
              s_dropped ? " (samples dropped)" : "");
 }

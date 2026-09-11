@@ -16,9 +16,9 @@ void screen_set_tap_cb(void (*cb)(void));
 /// call from any task; the zoom is applied from the LVGL task.
 void screen_knob(int dir);
 
-/// Turn the pond to autumn, or back — what recording mode looks like. Safe
-/// to call from any task; applied from the LVGL task.
-void screen_set_autumn(bool on);
+/// Put the pond into the look it wears while recording, or take it back
+/// out. Safe to call from any task; applied from the LVGL task.
+void screen_set_recording(bool on);
 
 #ifdef __cplusplus
 }

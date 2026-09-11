@@ -18,9 +18,9 @@ static void (*s_tap_cb)(void);
 
 /// Knob events and the recorder both arrive on other tasks, so they are
 /// only parked here and picked up from the LVGL task, which owns the pond's
-/// state. -1 in the season request means nothing is waiting.
+/// state. -1 in the recording request means nothing is waiting.
 static atomic_int s_knob_detents;
-static atomic_int s_season_req = -1;
+static atomic_int s_rec_req = -1;
 
 /// Give LVGL a frame or two to push the first pond render out to the panel
 /// before the backlight comes up, so the display never flashes garbage.
@@ -38,9 +38,9 @@ static void poll_cb(lv_timer_t *t)
     if (detents != 0 && pond_zoom(detents))
         sound_play(SOUND_TICK);
 
-    int season = atomic_exchange(&s_season_req, -1);
-    if (season >= 0)
-        pond_set_autumn(season != 0);
+    int rec = atomic_exchange(&s_rec_req, -1);
+    if (rec >= 0)
+        pond_set_recording(rec != 0);
 }
 
 static void screen_press_cb(lv_event_t *e)
@@ -88,7 +88,7 @@ void screen_knob(int dir)
     atomic_fetch_add(&s_knob_detents, dir);
 }
 
-void screen_set_autumn(bool on)
+void screen_set_recording(bool on)
 {
-    atomic_store(&s_season_req, on ? 1 : 0);
+    atomic_store(&s_rec_req, on ? 1 : 0);
 }

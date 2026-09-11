@@ -49,7 +49,7 @@ static void touch_i2c_bus_recover(void)
  *
  * The SD card (GPIO 46) and the Himax vision chip (GPIO 21) share SPI2, one
  * CS each. The BSP drives the card's CS high before it talks to the vision
- * chip, but nothing does the reverse — so on a board like this one, which
+ * chip, but nothing does the reverse. On a board like this one, which
  * never brings the vision chip up, its CS is left floating with the chip
  * powered. The card's own clock edges then select it, the Himax drives MISO
  * against the card, and every read comes back with a CRC error. Park it high
@@ -75,7 +75,7 @@ void board_init(void)
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     ESP_LOGI(TAG, "Wake cause: %d (0=reset, 2=ext0, 4=timer)", (int)cause);
 
-    // IO expander first — restores power rails after deep sleep
+    // IO expander first: restores power rails after deep sleep
     bsp_io_expander_init();
     ai_chip_deselect();
     ESP_ERROR_CHECK(bsp_codec_init());

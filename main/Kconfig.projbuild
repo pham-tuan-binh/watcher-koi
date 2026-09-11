@@ -18,6 +18,24 @@ menu "Mochi"
             nobody comes back to stop: it is closed and saved on its own
             once it reaches this length. 16 kHz mono is about 2 MB a minute.
 
+    config MOCHI_SCENE_DWELL_SEC
+        int "Seconds a scene holds before the pond moves on"
+        range 0 3600
+        default 180
+        help
+            How long the pond stays in one time of day and one weather
+            before it turns to the next. Six hours run round in order
+            (dawn, morning, noon, afternoon, dusk, night) and the sky is
+            rolled again on every one of them, so at the default of 180
+            the pond gets through a full day in about 18 minutes.
+
+            The turn itself is crossfaded over about six seconds, so a
+            dwell of only a few seconds gives a pond permanently in the
+            middle of changing. 0 holds whichever scene it opened on.
+
+            Recording holds the clock: the pond's day waits while it is
+            listening, and picks up where it left off afterwards.
+
     config MOCHI_POND_KOI_COUNT
         int "Number of koi in the pond"
         range 1 12

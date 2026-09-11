@@ -37,13 +37,13 @@ static void inactivity_timer_cb(TimerHandle_t t)
         return;
     }
 
-    ESP_LOGI(TAG, "Inactivity timeout — entering deep sleep");
+    ESP_LOGI(TAG, "Inactivity timeout, entering deep sleep");
     board_deep_sleep(0);
 }
 
 static void on_long_press(void)
 {
-    ESP_LOGI(TAG, "Button long press — entering deep sleep");
+    ESP_LOGI(TAG, "Button long press, entering deep sleep");
     recorder_flush(FLUSH_TIMEOUT_MS);   /* never sleep on an open file */
     board_deep_sleep(0);
 }
@@ -57,12 +57,13 @@ static void on_click(void)
     reset_inactivity_timer();
 }
 
-/// The pond turns to autumn for as long as there is a file open, so the
-/// colour on the glass is the recording's own state and not a guess at it.
+/// The pond wears the recording look for as long as there is a file open,
+/// so the colour on the glass is the recording's own state and not a guess
+/// at it.
 static void on_recorder_state(bool recording)
 {
     ESP_LOGI(TAG, "%s", recording ? "Recording started" : "Recording saved");
-    screen_set_autumn(recording);
+    screen_set_recording(recording);
 }
 
 static void on_knob(int dir)

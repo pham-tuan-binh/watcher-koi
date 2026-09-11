@@ -1,5 +1,5 @@
 /**
- * Pond sound design, synthesised on the fly — there are no audio assets.
+ * Pond sound design, synthesised on the fly. There are no audio assets.
  *
  * The plop of something hitting water is not the drop itself. Phillips,
  * Agarwal and Jordan filmed it (Scientific Reports, 2018) and found the
@@ -48,7 +48,7 @@ static const char *TAG = "sound";
 
 #define SR            DRV_AUDIO_SAMPLE_RATE   /* 16 kHz, mono, 16-bit */
 #define BLOCK         256                     /* 16 ms per write       */
-#define MAX_VOICES    4
+#define MAX_VOICES    6      /* rain and crickets overlap freely */
 #define MASTER_VOLUME 70
 
 /* Minnaert: f0 * r ~= 3.26 Hz*m, so f0 = 3.26e6 / r for r in micrometres. */
@@ -68,26 +68,85 @@ static const char *TAG = "sound";
 // --- Voice presets ---
 
 typedef struct {
-    uint16_t r_lo, r_hi;    /* entrapped bubble radius, micrometres */
-    uint16_t damping;       /* d, per second */
+    uint16_t r_lo, r_hi;    /* entrapped bubble radius, micrometres        */
+    uint16_t f_lo, f_hi;    /* tone in Hz, for the voices that are not
+                               bubbles and have no radius to speak of      */
+    int16_t  glide;         /* Hz per second. A bubble takes its rise from
+                               van den Doel instead, so leave this at 0    */
+    uint16_t damping;       /* d, per second                               */
     uint16_t len_ms;
-    uint8_t  amp;           /* bubble tone level, 0 = impact click only */
-    uint8_t  send;          /* into the reverb, 0..255 */
-    uint8_t  click;         /* impact transient level, 0..255 */
-    uint8_t  click_ms;      /* impact transient decay */
-    uint8_t  click_lp;      /* impact brightness: one-pole coeff, 0..255 */
-    uint8_t  delay_ms;      /* crater forming, before the bubble rings */
+    uint16_t click_ms;      /* noise decay                                 */
+    uint16_t rise_ms;       /* fade in, for anything that should not start
+                               with a bang                                 */
+    uint8_t  amp;           /* tone level, 0 = noise only                  */
+    uint8_t  send;          /* into the reverb, 0..255                     */
+    uint8_t  click;         /* impact transient level, 0..255              */
+    uint8_t  click_lp;      /* noise brightness: one-pole coeff, 0..255    */
+    uint8_t  click_hp;      /* and the rumble taken back off underneath it */
+    uint8_t  delay_ms;      /* crater forming, before the bubble rings     */
+    uint8_t  trem_hz;       /* warble rate: what makes a cricket a cricket */
+    uint8_t  trem_depth;    /* and how deep it warbles, 0..255             */
 } preset_t;
 
 /* 3000-4200 um is roughly 780-1090 Hz, about a fingertip's worth of trapped
- * air; the ambient voices use bigger, lazier bubbles further down. A real
- * tap drip traps a bubble ten times smaller and plinks near 9 kHz, which
- * this 16 kHz codec and its little speaker could not reproduce anyway. */
+ * air; the ambient voices use bigger, lazier bubbles. A real tap drip traps
+ * a bubble ten times smaller and plinks near 9 kHz, which this 16 kHz codec
+ * and its little speaker could not reproduce anyway.
+ *
+ * The last five are not water. A bird, a cricket and a frog have nothing to
+ * do with Minnaert, so they are written as a frequency and a warble rather
+ * than as a radius, and they say so by leaving r_lo at zero. They are the
+ * same three-part voice underneath: a tone, an envelope, and a little noise
+ * where the sound starts. */
 static const preset_t PRESETS[SOUND_COUNT] = {
-    /* DROP    */ { 3000, 4200, 30, 200, 150, 190, 110, 4, 140,  7 },
-    /* SURFACE */ { 5000, 7000, 22, 280,  70, 150,  45, 6,  90, 10 },
-    /* DISTANT */ { 6000, 9000, 20, 280,  34, 230,  20, 7,  70, 12 },
-    /* TICK    */ { 4000, 4000, 30,  40,   0,   0,  95, 3, 205,  0 },
+    [SOUND_DROP] = {
+        .r_lo = 3000, .r_hi = 4200, .damping = 30, .len_ms = 200,
+        .amp = 150, .send = 190, .click = 110, .click_ms = 4,
+        .click_lp = 140, .delay_ms = 7,
+    },
+    [SOUND_SURFACE] = {
+        .r_lo = 5000, .r_hi = 7000, .damping = 22, .len_ms = 280,
+        .amp = 70, .send = 150, .click = 45, .click_ms = 6,
+        .click_lp = 90, .delay_ms = 10,
+    },
+    [SOUND_DISTANT] = {
+        .r_lo = 6000, .r_hi = 9000, .damping = 20, .len_ms = 280,
+        .amp = 34, .send = 230, .click = 20, .click_ms = 7,
+        .click_lp = 70, .delay_ms = 12,
+    },
+    [SOUND_TICK] = {
+        .r_lo = 4000, .r_hi = 4000, .damping = 30, .len_ms = 40,
+        .amp = 0, .send = 0, .click = 95, .click_ms = 3, .click_lp = 205,
+    },
+    /* A raindrop is a far smaller pocket of air than a fingertip, so by
+     * Minnaert it rings a good deal higher and dies much faster. */
+    [SOUND_RAIN] = {
+        .r_lo = 1100, .r_hi = 1700, .damping = 60, .len_ms = 90,
+        .amp = 62, .send = 60, .click = 38, .click_ms = 2,
+        .click_lp = 210, .delay_ms = 2,
+    },
+    [SOUND_BIRD] = {
+        .f_lo = 2500, .f_hi = 3500, .glide = 2400, .damping = 20,
+        .len_ms = 110, .rise_ms = 8, .amp = 80, .send = 120,
+    },
+    [SOUND_INSECT] = {
+        .f_lo = 4200, .f_hi = 4800, .damping = 5, .len_ms = 260,
+        .rise_ms = 25, .amp = 40, .send = 70, .trem_hz = 30, .trem_depth = 235,
+    },
+    [SOUND_FROG] = {
+        .f_lo = 170, .f_hi = 250, .damping = 7, .len_ms = 300,
+        .rise_ms = 12, .amp = 115, .send = 110, .trem_hz = 19, .trem_depth = 215,
+    },
+    /* No tone at all: a gust is filtered noise that arrives and leaves
+     * slowly, which is the only reason the voice needed a fade in. Low
+     * passed on its own it comes out as a subsonic rumble, most of it under
+     * the frequency this speaker can move at all, so the bottom is taken
+     * back off and what is left sits where a small cone can actually
+     * shift air. */
+    [SOUND_WIND] = {
+        .len_ms = 2200, .rise_ms = 600, .amp = 0, .send = 200,
+        .click = 170, .click_ms = 500, .click_lp = 70, .click_hp = 12,
+    },
 };
 
 // --- Oscillator table ---
@@ -122,6 +181,9 @@ typedef struct {
     float freq, dfreq;  /* the rising resonance and its per-sample step */
     float env, env_k;
     float click, click_k, click_lp, lp;
+    float click_hp, hp;
+    float gain, gain_up; /* fade in, 1.0 for everything that starts at once */
+    float trem_phase, trem_inc, trem_depth;
     uint32_t rng;
     float send;
 } voice_t;
@@ -162,26 +224,48 @@ static void voice_start(sound_t which)
             v = &s_voices[i];
     }
 
-    uint32_t r = p->r_lo;
-    if (p->r_hi > p->r_lo)
-        r += esp_random() % (uint32_t)(p->r_hi - p->r_lo + 1);
-    float f0 = MINNAERT / (float)r;
     float d = (float)p->damping;
+    float f0, glide;
+
+    if (p->r_lo) {
+        /* water: the pitch comes from the size of the trapped bubble, and
+         * the rise with it */
+        uint32_t r = p->r_lo;
+        if (p->r_hi > p->r_lo)
+            r += esp_random() % (uint32_t)(p->r_hi - p->r_lo + 1);
+        f0 = MINNAERT / (float)r;
+        glide = f0 * BUBBLE_XI * d;          /* f(t) = f0 (1 + XI d t) */
+    } else {
+        f0 = (float)p->f_lo;
+        if (p->f_hi > p->f_lo)
+            f0 += (float)(esp_random() % (uint32_t)(p->f_hi - p->f_lo + 1));
+        glide = (float)p->glide;
+    }
 
     v->active = true;
     v->left = (uint32_t)p->len_ms * SR / 1000;
     v->delay = (uint32_t)p->delay_ms * SR / 1000;
     v->phase = 0.0f;
     v->freq = f0;
-    v->dfreq = f0 * BUBBLE_XI * d / (float)SR;
+    v->dfreq = glide / (float)SR;
     v->env = (float)p->amp / 255.0f;
     v->env_k = expf(-d / (float)SR);
     v->click = (float)p->click / 255.0f;
     v->click_k = decay_ms_k((float)p->click_ms);
     v->click_lp = (float)p->click_lp / 255.0f;
+    v->click_hp = (float)p->click_hp / 255.0f;
     v->lp = 0.0f;
+    v->hp = 0.0f;
     v->rng = esp_random() | 1u;
     v->send = (float)p->send / 255.0f;
+
+    uint32_t rise = (uint32_t)p->rise_ms * SR / 1000;
+    v->gain = rise ? 0.0f : 1.0f;
+    v->gain_up = rise ? 1.0f / (float)rise : 0.0f;
+
+    v->trem_phase = 0.0f;
+    v->trem_inc = (float)p->trem_hz / (float)SR;
+    v->trem_depth = (float)p->trem_depth / 255.0f;
 }
 
 static bool voices_active(void)
@@ -215,7 +299,14 @@ static void render_block(bool fade)
             /* the impact itself: a short, dull noise burst */
             if (v->click > 0.0005f) {
                 v->lp += (noise(&v->rng) - v->lp) * v->click_lp;
-                s += v->lp * v->click;
+                float nz = v->lp;
+                if (v->click_hp > 0.0f) {
+                    /* second, much slower pole, subtracted: what is left is
+                     * a band rather than everything down to DC */
+                    v->hp += (nz - v->hp) * v->click_hp;
+                    nz -= v->hp;
+                }
+                s += nz * v->click;
                 v->click *= v->click_k;
             }
 
@@ -229,6 +320,22 @@ static void render_block(bool fade)
                 s += osc(v->phase) * v->env;
                 v->freq += v->dfreq;      /* f(t) = f0 (1 + XI d t) */
                 v->env *= v->env_k;
+            }
+
+            /* a warble deep enough to chop the tone into pulses is what
+             * separates a cricket from a tuning fork */
+            if (v->trem_depth > 0.0f) {
+                v->trem_phase += v->trem_inc;
+                if (v->trem_phase >= 1.0f)
+                    v->trem_phase -= 1.0f;
+                s *= 1.0f - v->trem_depth * (0.5f - 0.5f * osc(v->trem_phase));
+            }
+
+            if (v->gain < 1.0f) {
+                v->gain += v->gain_up;
+                if (v->gain > 1.0f)
+                    v->gain = 1.0f;
+                s *= v->gain;
             }
 
             dry += s;

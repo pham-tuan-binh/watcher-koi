@@ -25,17 +25,23 @@ bool pond_zoom(int delta);
 
 /// Change how much is simulated. Counts are clamped to the POND_MAX_* limits
 /// above; new koi, pads and motes are dropped into the pond and surplus ones
-/// are removed. This is how many exist, not how many you can see — they roam
+/// are removed. This is how many exist, not how many you can see. They roam
 /// past the rim into the dark, so the number on screen drifts either side.
 void pond_set_population(int koi, int pads, int motes);
 
 /// Read back what is currently being simulated. Any pointer may be NULL.
 void pond_get_population(int *koi, int *pads, int *motes);
 
-/// Turn the pond's season. Autumn dims the water, warms the dark and puts
-/// every koi in red; the change is eased over about a second and a ring
-/// goes out across the pond as it starts. Call it as often as you like.
-void pond_set_autumn(bool on);
+/// Put the pond into (or out of) the look it wears while recording: warm
+/// dark, dim water and every koi red, which no hour of the day and no
+/// weather will ever do. Eased over about a second, and it holds the
+/// pond's day still until it is switched off again.
+void pond_set_recording(bool on);
+
+/// The scene on screen: the hour ("dusk", or "listening" while recording)
+/// and the sky ("clear", "rain", ...). For logging.
+const char *pond_hour_name(void);
+const char *pond_sky_name(void);
 
 #ifdef __cplusplus
 }

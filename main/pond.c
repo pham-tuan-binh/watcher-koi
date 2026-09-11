@@ -22,10 +22,12 @@
  * with distance from the middle of the pond, so the count you can see
  * drifts either side of the count being simulated.
  *
- * Because colour is only ever a lookup, the pond has a second set of ramps
- * -- an autumn one, with red koi, worn while the Watcher is recording --
- * and turning the season is a crossfade between the two tables. The
- * simulation never finds out.
+ * Because colour is only ever a lookup, what the pond looks like is a
+ * small block of bytes (a light, a saturation, an ambient level, and how
+ * hard the water moves) rather than anything the simulation knows about.
+ * A time of day composes with a weather into one of those blocks, and
+ * every change of scene, the red one it wears while recording included, is
+ * the same byte-wise crossfade between two of them.
  */
 
 #include <math.h>
@@ -36,6 +38,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_random.h"
 #include "lvgl.h"
 #include "sensecap-watcher.h"
@@ -85,7 +88,9 @@ enum {
 
 #define LEVELS 6
 
-/* Fully lit colour of each material. Everything fades towards NIGHT. */
+/* The pond's pigments: the colour of each material under a full, white
+ * light. What an hour of the day or a turn of the weather does to them is
+ * a matter for the looks below. These do not change. */
 static const uint8_t MAT_RGB[MAT_COUNT][3] = {
     {  70, 150, 165 },                                   /* water          */
     {  74, 140,  70 }, { 156, 204, 112 }, { 245, 175, 205 },
@@ -95,23 +100,101 @@ static const uint8_t MAT_RGB[MAT_COUNT][3] = {
     { 205, 245, 225 },                                   /* drifting mote  */
 };
 
-static const uint8_t NIGHT_RGB[3] = { 4, 8, 13 };
-static const uint8_t GLOW_RGB[3]  = { 165, 225, 235 };
-
 /* How much of the base colour survives at each light level, in 1/256ths. */
 static const uint16_t LEVEL_MIX[LEVELS] = { 26, 56, 100, 150, 205, 256 };
 
 static lv_color_t s_pal[MAT_COUNT * LEVELS];
 
-// --- Season ---
+// --- Looks: the time of day, the weather, and the pond listening ---
 //
-// The pond keeps two palettes: the blue-green cave it normally lives in,
-// and an autumn one it wears while the Watcher is listening. Colour only
-// ever happens in the ramps, so turning the season turns the water, the
-// koi, the pads, the rings and the light in one go -- and every koi comes
-// out red, which is the point of it.
+// An hour of the day does not repaint the pond, it relights it. A koi is
+// the same orange at midnight as at noon; what changes is the light landing
+// on it. So an hour carries a light and never a colour for the fish: what
+// shadow fades to, what the brightest step glows, the colour of the
+// illumination itself, and how hard that illumination stains what it falls
+// on. Weather is then a handful of percentages laid over an hour --
+// overcast takes the colour and the light down and lifts the shadows grey,
+// rain takes more and puts rings on the water, mist keeps the light but
+// eats the contrast.
+//
+// The two compose into a look_t, which is what actually gets rendered, and
+// a look is nothing but bytes: crossfading between two of them is one pass
+// over the struct. That is the entire transition machinery, and it is the
+// same machinery whether the pond is sliding from dusk into night over six
+// seconds or going red because you asked it to record.
 
-static const uint8_t AUTUMN_RGB[MAT_COUNT][3] = {
+typedef struct {
+    uint8_t pigment[MAT_COUNT][3]; /* fully lit colour of every material   */
+    uint8_t night[3];              /* what everything fades to in shadow   */
+    uint8_t glow[3];               /* colour of the brightest light step   */
+    uint8_t light[3];              /* colour of the illumination itself    */
+    uint8_t light_mix;             /* how far the light stains the pigment */
+    uint8_t sat;                   /* 255 keeps the pigment, 0 greys it    */
+    uint8_t ambient;               /* open water light at the pond centre  */
+    uint8_t swell;                 /* surface movement, 128 = as designed  */
+    uint8_t drift;                 /* pad and mote speed, 128 = as designed*/
+    uint8_t rain;                  /* raindrops: chance in 256 per frame   */
+    uint8_t mote_gain;             /* how hard the motes burn, 128 = as is */
+    uint8_t birds, insects, frogs; /* chance in 2048 per frame, each       */
+    uint8_t wind;                  /* likewise, for a gust over the water  */
+} look_t;
+
+/* Every field is a byte, so a look crossfades as one flat run of bytes.
+ * This is what keeps that true if a wider field is ever added below. */
+_Static_assert(sizeof(look_t) == MAT_COUNT * 3 + 9 + 11,
+               "look_t has to stay all bytes for look_lerp");
+
+/* The light of one hour, and what can be heard in it. No pigments: see
+ * above. The three rates are chances in 2048 per frame, so at 25 fps a
+ * value of 40 is about one every two seconds. */
+typedef struct {
+    const char *name;
+    uint8_t night[3], glow[3], light[3];
+    uint8_t light_mix, sat, ambient, mote_gain;
+    uint8_t birds, insects, frogs;
+} hour_t;
+
+/* Six hours around a day. Night is the pond as it was first built, a cave
+ * lit blue, and the rest of the day opens up from there. */
+static const hour_t HOURS[] = {
+    /*                night          glow               light         mix  sat  amb mote  brd ins frg */
+    { "dawn",      { 13,  9, 14 }, { 255, 198, 188 }, { 255, 162, 140 }, 100, 180,  88, 150,  46,  2, 10 },
+    { "morning",   {  6, 11, 18 }, { 225, 245, 255 }, { 198, 230, 255 },  55, 245, 138,  70,  32,  4,  0 },
+    { "noon",      {  9, 15, 18 }, { 255, 252, 242 }, { 255, 250, 232 },  40, 255, 172,  40,   9, 12,  0 },
+    { "afternoon", { 14, 11,  9 }, { 255, 222, 165 }, { 255, 203, 128 },  80, 250, 148,  80,  14, 17,  3 },
+    { "dusk",      { 14,  7, 11 }, { 255, 168, 112 }, { 255, 133,  92 }, 115, 200,  82, 170,   7, 27, 24 },
+    { "night",     {  4,  8, 13 }, { 165, 225, 235 }, {  95, 140, 225 }, 115, 120,  50, 255,   0, 35, 31 },
+};
+#define HOUR_COUNT ((int)(sizeof HOURS / sizeof HOURS[0]))
+
+/* Weather, as percentages of whatever hour it lands on. Birds and insects
+ * shut up in the wet, which is what critter_pct is for. */
+typedef struct {
+    const char *name;
+    uint8_t sat_pct, ambient_pct, mote_pct, critter_pct;
+    uint8_t haze[3], haze_mix;     /* the light drifts towards this */
+    uint8_t swell, drift, rain, wind;
+} weather_t;
+
+enum { SKY_CLEAR = 0, SKY_OVERCAST, SKY_RAIN, SKY_MIST, SKY_COUNT };
+
+static const weather_t WEATHER[] = {
+    /*           sat  amb mote crit        haze         hz  swl drf rain wind */
+    { "clear",   100, 100, 100, 100, { 255, 255, 255 },  0, 128, 128,  0,   0 },
+    { "overcast", 70,  78, 115,  72, { 150, 158, 170 }, 70, 150, 150,  0,  11 },
+    { "rain",     56,  62,  65,  22, { 138, 148, 160 }, 95, 200, 175, 90,  18 },
+    { "mist",     72,  90, 145,  58, { 198, 208, 208 }, 92,  90,  95,  0,   5 },
+};
+_Static_assert((int)(sizeof WEATHER / sizeof WEATHER[0]) == SKY_COUNT,
+               "WEATHER must match the sky enum");
+
+/* Mostly clear: the wet skies are the exception, not the rule. */
+static const uint8_t SKY_WEIGHT[SKY_COUNT] = { 110, 45, 28, 22 };
+
+/* The pond listening. This one is a pigment change and not a light change:
+ * every koi goes red, which no hour and no weather would ever do, and that
+ * is exactly why it reads as a mode rather than as a time of day. */
+static const uint8_t REC_PIGMENT[MAT_COUNT][3] = {
     { 104,  84,  76 },                                   /* dusk on brown  */
     { 146,  86,  38 }, { 232, 164,  76 }, { 255, 214, 150 },
     { 238,  48,  36 }, { 255, 168, 104 }, { 172,  34,  28 },
@@ -120,72 +203,129 @@ static const uint8_t AUTUMN_RGB[MAT_COUNT][3] = {
     { 255, 204, 148 },                                   /* ember mote     */
 };
 
-/* Autumn dark is warm, and what glows over it is lantern rather than moon. */
-static const uint8_t AUTUMN_NIGHT_RGB[3] = { 15, 7, 6 };
-static const uint8_t AUTUMN_GLOW_RGB[3]  = { 255, 194, 126 };
+/* No birds, no crickets, no frogs: the sound module drops everything while
+ * a file is open anyway, and a look that asked for them would be lying. */
+static const hour_t REC_HOUR = {
+    "listening", { 15, 7, 6 }, { 255, 194, 126 }, { 255, 170, 120 },
+    60, 240, 98, 120, 0, 0, 0
+};
 
-#define SEASON_STEP 8      /* 256/8 frames to turn: a second and a third */
-#define AUTUMN_DIM  22     /* dusk takes this much off the ambient water */
+/* A scene change is eased over this many frames: a sky takes its time, the
+ * pond answering a button press should not. */
+#define FADE_SKY_FRAMES 150
+#define FADE_REC_FRAMES 32
 
-static int s_season;       /* 0 = the pond as it lives, 256 = full autumn */
-static int s_season_to;
-static int s_season_mix;   /* the eased season the ramps were built for */
+/* Wall clock, not a frame count. A frame is nominally FRAME_MS but the
+ * timer only fires once the last one has been drawn, so the real period
+ * runs nearer 49 ms, and counting frames made every dwell 22% long. */
+#define DWELL_US ((int64_t)CONFIG_MOCHI_SCENE_DWELL_SEC * 1000000)
+
+static look_t s_look;          /* what is being rendered right now */
+static look_t s_look_from, s_look_to;
+static int s_fade_at, s_fade_frames;
+static int s_hour, s_sky;
+static bool s_recording;
+static int64_t s_scene_due;
 
 static uint8_t mix(uint8_t a, uint8_t b, int t)
 {
     return (uint8_t)((a * (256 - t) + b * t) >> 8);
 }
 
-/// Rebuild every ramp with the season t/256 of the way into autumn.
-static void palette_build(int t)
+static uint8_t pct_u8(int v, int pct)
 {
-    uint8_t night[3], glow[3];
+    int r = v * pct / 100;
+    return (uint8_t)(r > 255 ? 255 : r);
+}
+
+/// Work out what an hour under a given sky actually renders as.
+static void look_compose(look_t *out, const hour_t *h, const weather_t *w)
+{
+    memcpy(out->pigment, MAT_RGB, sizeof out->pigment);
+
     for (int c = 0; c < 3; c++) {
-        night[c] = mix(NIGHT_RGB[c], AUTUMN_NIGHT_RGB[c], t);
-        glow[c] = mix(GLOW_RGB[c], AUTUMN_GLOW_RGB[c], t);
+        /* haze lifts the shadows only half as far as it washes out the
+         * light: fog greys what you can see before it fills in what you
+         * cannot */
+        out->night[c] = mix(h->night[c], w->haze[c], w->haze_mix / 2);
+        out->glow[c] = mix(h->glow[c], w->haze[c], w->haze_mix);
+        out->light[c] = mix(h->light[c], w->haze[c], w->haze_mix);
     }
 
+    out->light_mix = h->light_mix;
+    out->sat = pct_u8(h->sat, w->sat_pct);
+    out->ambient = pct_u8(h->ambient, w->ambient_pct);
+    out->mote_gain = pct_u8(h->mote_gain, w->mote_pct);
+    out->swell = w->swell;
+    out->drift = w->drift;
+    out->rain = w->rain;
+    out->wind = w->wind;
+
+    out->birds = pct_u8(h->birds, w->critter_pct);
+    out->insects = pct_u8(h->insects, w->critter_pct);
+    out->frogs = pct_u8(h->frogs, w->critter_pct);
+}
+
+/// Crossfade two looks. All bytes, so this does not care what the fields
+/// mean: colours, speeds and rainfall all cross over together.
+static void look_lerp(look_t *out, const look_t *a, const look_t *b, int t)
+{
+    uint8_t *o = (uint8_t *)out;
+    const uint8_t *pa = (const uint8_t *)a;
+    const uint8_t *pb = (const uint8_t *)b;
+    for (size_t i = 0; i < sizeof(look_t); i++)
+        o[i] = mix(pa[i], pb[i], t);
+}
+
+/// Rebuild every ramp for a look: pigment, washed out by how grey the sky
+/// is and stained by the colour of the light, then faded towards that
+/// look's own shadow across the six steps.
+static void palette_build(const look_t *lk)
+{
     for (int m = 0; m < MAT_COUNT; m++) {
+        int lum = (lk->pigment[m][0] * 77 + lk->pigment[m][1] * 150
+                 + lk->pigment[m][2] * 29) >> 8;
+
         uint8_t base[3];
-        for (int c = 0; c < 3; c++)
-            base[c] = mix(MAT_RGB[m][c], AUTUMN_RGB[m][c], t);
+        for (int c = 0; c < 3; c++) {
+            uint8_t p = mix((uint8_t)lum, lk->pigment[m][c], lk->sat);
+            base[c] = mix(p, lk->light[c], lk->light_mix);
+        }
 
         for (int l = 0; l < LEVELS; l++) {
             int k = LEVEL_MIX[l];
-            uint8_t r = mix(night[0], base[0], k);
-            uint8_t g = mix(night[1], base[1], k);
-            uint8_t b = mix(night[2], base[2], k);
+            uint8_t r = mix(lk->night[0], base[0], k);
+            uint8_t g = mix(lk->night[1], base[1], k);
+            uint8_t b = mix(lk->night[2], base[2], k);
             if (l == LEVELS - 1) {
                 /* brightest step picks up a little of the glow's own colour */
-                r = mix(r, glow[0], 36);
-                g = mix(g, glow[1], 36);
-                b = mix(b, glow[2], 36);
+                r = mix(r, lk->glow[0], 36);
+                g = mix(g, lk->glow[1], 36);
+                b = mix(b, lk->glow[2], 36);
             }
             s_pal[m * LEVELS + l] = lv_color_make(r, g, b);
         }
     }
 }
 
-/// Smoothstep on 0..256, so the turn eases in and out rather than starting
+/// Smoothstep on 0..256, so a turn eases in and out rather than starting
 /// and stopping dead.
-static int season_ease(int s)
+static int ease_256(int t)
 {
-    return (s * s * (768 - 2 * s)) >> 16;
+    return (t * t * (768 - 2 * t)) >> 16;
 }
 
-/// Carry the season on by a frame, rebuilding the ramps if it moved. Eighty
-/// four entries is nothing next to a frame of water.
-static void season_step(void)
+/// Carry a crossfade on by one frame. Eighty four ramp entries is nothing
+/// next to a frame of water, and this only runs while something is turning.
+static void look_step(void)
 {
-    if (s_season == s_season_to)
+    if (s_fade_at >= s_fade_frames)
         return;
 
-    s_season += (s_season < s_season_to) ? SEASON_STEP : -SEASON_STEP;
-    if (s_season < 0) s_season = 0;
-    if (s_season > 256) s_season = 256;
-
-    s_season_mix = season_ease(s_season);
-    palette_build(s_season_mix);
+    s_fade_at++;
+    look_lerp(&s_look, &s_look_from, &s_look_to,
+              ease_256(256 * s_fade_at / s_fade_frames));
+    palette_build(&s_look);
 }
 
 // --- Koi sprite ---
@@ -200,7 +340,7 @@ static void season_step(void)
 //
 // The tail is a flat blade, not a fan. A fish's caudal fin stands vertical
 // and beats side to side, so from directly above you are looking at its
-// edge — the fork everyone draws is a side-on view and is not visible from
+// edge. The fork everyone draws is a side-on view and is not visible from
 // up here.
 //
 // This is only the blank. The markings are not in the art: each koi gets
@@ -228,7 +368,7 @@ static const char *const KOI_ART[KOI_H] = {
 
 static uint8_t s_koi_sprite[KOI_H][KOI_W];
 
-/* main, accent, tail — indexed by sprite value - 1 */
+/* main, accent, tail, indexed by sprite value - 1 */
 static const uint8_t KOI_MAT[3][3] = {
     { MAT_KOI_A_M, MAT_KOI_A_A, MAT_KOI_A_F },
     { MAT_KOI_B_M, MAT_KOI_B_A, MAT_KOI_B_F },
@@ -414,7 +554,9 @@ static void camera_update(void)
 
 // --- Water ---
 
-#define AMBIENT_CORE 120   /* light on open water at the centre of the pond */
+/* What the hours in HOURS[] are tuned around: the light on open water at
+ * the centre of the pond. The live value comes from the look. */
+#define AMBIENT_CORE 120
 
 static void draw_water(void)
 {
@@ -422,7 +564,8 @@ static void draw_water(void)
     int a2 = -2 * (int)s_frame;
     int a3 = 3 * (int)s_frame;
     const int r2max = POND_R * POND_R;
-    const int amb = AMBIENT_CORE - ((AUTUMN_DIM * s_season_mix) >> 8);
+    const int amb = s_look.ambient;
+    const int swell = s_look.swell;
 
     for (int vy = 0; vy < s_gh; vy++) {
         int y = s_oy + vy;
@@ -442,7 +585,7 @@ static void draw_water(void)
 
             /* light drops off towards the rim: the pond edge is nearly black,
              * with a slight lean towards the upper left */
-            int l = amb - (amb * d2) / r2max + (w >> 4)
+            int l = amb - (amb * d2) / r2max + (((w >> 4) * swell) >> 7)
                   - (dx + dy) / 3;
             if (l < 0) l = 0;
 
@@ -589,7 +732,7 @@ static void pad_update(pad_t *p, int idx)
         p->heading = (uint8_t)(p->heading + (int)rnd(41) - 20);
 
     /* Left to itself a drifting leaf is a 2D random walk, and a random walk
-     * spends most of its time far from where it started — over a few minutes
+     * spends most of its time far from where it started, and over a few minutes
      * every pad ends up stranded against the rim. So the further out a pad
      * gets, the harder the pond turns it back: free in the middle, firmly
      * steered at the edge. */
@@ -627,8 +770,9 @@ static void pad_update(pad_t *p, int idx)
         p->y += (oy * 20) / d;
     }
 
-    p->x += (COS(p->heading) * p->speed) >> 8;
-    p->y += (SIN(p->heading) * p->speed) >> 8;
+    int speed = (p->speed * s_look.drift) >> 7;
+    p->x += (COS(p->heading) * speed) >> 8;
+    p->y += (SIN(p->heading) * speed) >> 8;
 }
 
 /// Pads read as dark silhouettes with a lit rim on the side facing the light.
@@ -699,8 +843,8 @@ static void draw_pad(const pad_t *p)
 /**
  * Give one koi its own markings.
  *
- * Koi are not striped. A pattern is a handful of plates -- large, irregular
- * groupings of colour -- spread along the whole length of the fish rather
+ * Koi are not striped. A pattern is a handful of plates (large, irregular
+ * groupings of colour) spread along the whole length of the fish rather
  * than bunched at one end, wandering off the spine instead of mirroring it.
  * A lone stray pixel of colour is the fault called tobi hi, so any marking
  * that ends up by itself is rubbed out again.
@@ -962,8 +1106,9 @@ static void mote_update(mote_t *m)
     if (dx * dx + dy * dy > MOTE_ROAM * MOTE_ROAM)
         m->heading = angle_of(-dx, -dy);
 
-    m->x += (COS(m->heading) * m->speed) >> 8;
-    m->y += (SIN(m->heading) * m->speed) >> 8;
+    int speed = (m->speed * s_look.drift) >> 7;
+    m->x += (COS(m->heading) * speed) >> 8;
+    m->y += (SIN(m->heading) * speed) >> 8;
 }
 
 static void draw_mote(const mote_t *m)
@@ -974,8 +1119,11 @@ static void draw_mote(const mote_t *m)
     if (cx < 0 || cx >= s_gw || cy < 0 || cy >= s_gh || fade <= 0)
         return;
 
-    /* pulse, so the motes breathe rather than sit there */
-    int halo = ((26 + (SIN(m->phase * 2) >> 4)) * fade) >> 8;
+    /* pulse, so the motes breathe rather than sit there; how hard they
+     * burn is the look's business: barely there at noon, fireflies at
+     * night, and a mist full of them */
+    const int gain = s_look.mote_gain;
+    int halo = (((26 + (SIN(m->phase * 2) >> 4)) * fade) >> 8) * gain >> 7;
 
     for (int vy = cy - 2; vy <= cy + 2; vy++) {
         if (vy < 0 || vy >= s_gh)
@@ -991,15 +1139,121 @@ static void draw_mote(const mote_t *m)
         }
     }
 
+    int core = ((((190 + (SIN(m->phase * 2) >> 2))) * fade) >> 8) * gain >> 7;
+    if (core > LIGHT_MAX)
+        core = LIGHT_MAX;
     s_mat[cy][cx] = MAT_MOTE;
-    s_light[cy][cx] = (int16_t)((((190 + (SIN(m->phase * 2) >> 2))) * fade) >> 8);
+    s_light[cy][cx] = (int16_t)core;
+}
+
+// --- Scene: which look is on, and when it changes ---
+
+/// Retarget the crossfade at whatever the pond should be showing now,
+/// starting from what is on screen this instant, so a sky that changes
+/// mid-sunrise carries on from where the sunrise had got to.
+static void look_retarget(int frames)
+{
+    s_look_from = s_look;
+    if (s_recording) {
+        look_compose(&s_look_to, &REC_HOUR, &WEATHER[SKY_CLEAR]);
+        memcpy(s_look_to.pigment, REC_PIGMENT, sizeof s_look_to.pigment);
+    } else {
+        look_compose(&s_look_to, &HOURS[s_hour], &WEATHER[s_sky]);
+    }
+    s_fade_at = 0;
+    s_fade_frames = frames;
+
+    /* a ring out from wherever you are looking, so the change reads as
+     * something happening to the pond rather than a palette swap */
+    ripple_spawn((int)(s_cam_x >> 8), (int)(s_cam_y >> 8), 0, RIPPLE_LIFE);
+}
+
+/// Roll the next sky. Weighted towards clear, with one rule: rain clears
+/// through overcast rather than stopping dead or going on all day.
+static int sky_pick(void)
+{
+    if (s_sky == SKY_RAIN)
+        return rnd(2) ? SKY_OVERCAST : SKY_CLEAR;
+
+    int total = 0;
+    for (int i = 0; i < SKY_COUNT; i++)
+        total += SKY_WEIGHT[i];
+
+    int r = (int)rnd((uint32_t)total);
+    for (int i = 0; i < SKY_COUNT; i++) {
+        r -= SKY_WEIGHT[i];
+        if (r < 0)
+            return i;
+    }
+    return SKY_CLEAR;
+}
+
+static void scene_advance(void)
+{
+    s_hour = (s_hour + 1) % HOUR_COUNT;
+    s_sky = sky_pick();
+    look_retarget(FADE_SKY_FRAMES);
+    ESP_LOGI(TAG, "Scene: %s, %s", HOURS[s_hour].name, WEATHER[s_sky].name);
+}
+
+/// Hold the current scene for its dwell, then move the day on. Recording
+/// holds the clock: the pond's day waits while it is listening, and picks
+/// up with a full dwell in hand.
+static void scene_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+
+    if (DWELL_US == 0 || s_recording) {
+        s_scene_due = now + DWELL_US;
+        return;
+    }
+    if (now < s_scene_due)
+        return;
+
+    s_scene_due = now + DWELL_US;
+    scene_advance();
+}
+
+/// Rain is a lot of small rings, which the ripples already do for free.
+/// The rings are kept short-lived so they stay small and read as drops
+/// rather than as something falling in, and one in five is heard as well as
+/// seen: a patter, not a downpour on a tin roof.
+static void rain_step(void)
+{
+    if (!s_look.rain || (int)rnd(256) >= s_look.rain)
+        return;
+
+    int a = (int)rnd(256);
+    int d = isqrt32((int32_t)rnd((uint32_t)(POND_R * POND_R)));
+    ripple_spawn(WORLD_CX + ((COS(a) * d) >> 8),
+                 WORLD_CY + ((SIN(a) * d) >> 8), 0, RIPPLE_LIFE / 5);
+
+    if (rnd(5) == 0)
+        sound_play(SOUND_RAIN);
+}
+
+/// What can be heard in the scene besides the water. The rates live in the
+/// look and so they crossfade with it: the birds of a dawn thin out as the
+/// morning comes up, and the crickets of a dusk are already starting before
+/// the light has finished going. Nothing here is heard while recording, the
+/// sound module drops the lot.
+static void ambience_step(void)
+{
+    if (s_look.birds && rnd(2048) < s_look.birds)
+        sound_play(SOUND_BIRD);
+    if (s_look.insects && rnd(2048) < s_look.insects)
+        sound_play(SOUND_INSECT);
+    if (s_look.frogs && rnd(2048) < s_look.frogs)
+        sound_play(SOUND_FROG);
+    if (s_look.wind && rnd(2048) < s_look.wind)
+        sound_play(SOUND_WIND);
 }
 
 // --- Frame ---
 
 /// Expand the visible cells into the canvas, s_pix screen pixels each. The
 /// zoom steps do not all divide the panel evenly, so the last block of a row
-/// or column is clipped — it falls outside the round bezel anyway.
+/// or column is clipped. It falls outside the round bezel anyway.
 static void blit(void)
 {
     const int pix = s_pix;
@@ -1038,7 +1292,10 @@ static void blit(void)
 static void pond_step(void)
 {
     s_frame++;
-    season_step();
+    look_step();
+    scene_tick();
+    rain_step();
+    ambience_step();
 
     if (s_koi_count > 0 && --s_next_surface == 0) {
         /* a koi nosing the surface somewhere */
@@ -1165,13 +1422,22 @@ void pond_get_population(int *koi, int *pads, int *motes)
 void pond_init(lv_obj_t *parent)
 {
     trig_init();
-    palette_build(0);
     dither_init();
     sprite_init();
 
     s_cam_x = (int32_t)WORLD_CX << 8;
     s_cam_y = (int32_t)WORLD_CY << 8;
     camera_apply_zoom();
+
+    /* open somewhere random in the day, so waking the Watcher is not
+     * always dawn. There is an RTC on the board but nothing sets it, so
+     * this is the pond's own day, not the one outside the window. */
+    s_hour = (int)rnd(HOUR_COUNT);
+    s_sky = sky_pick();
+    look_compose(&s_look, &HOURS[s_hour], &WEATHER[s_sky]);
+    s_look_from = s_look_to = s_look;
+    palette_build(&s_look);
+    s_scene_due = esp_timer_get_time() + DWELL_US;
 
     pond_set_population(CONFIG_MOCHI_POND_KOI_COUNT,
                         CONFIG_MOCHI_POND_LILY_COUNT,
@@ -1197,6 +1463,8 @@ void pond_init(lv_obj_t *parent)
 
     ESP_LOGI(TAG, "Pond ready: %dx%d world, %d koi, %d pads, %d motes",
              WORLD_W, WORLD_W, s_koi_count, s_pad_count, s_mote_count);
+    ESP_LOGI(TAG, "Scene: %s, %s (holding %d s)", HOURS[s_hour].name,
+             WEATHER[s_sky].name, CONFIG_MOCHI_SCENE_DWELL_SEC);
 }
 
 void pond_tap(lv_coord_t x, lv_coord_t y)
@@ -1216,16 +1484,22 @@ void pond_tap(lv_coord_t x, lv_coord_t y)
     }
 }
 
-void pond_set_autumn(bool on)
+void pond_set_recording(bool on)
 {
-    int to = on ? 256 : 0;
-    if (to == s_season_to)
+    if (on == s_recording)
         return;
-    s_season_to = to;
+    s_recording = on;
+    look_retarget(FADE_REC_FRAMES);
+}
 
-    /* a ring out from wherever you are looking, so the turn reads as
-     * something happening to the pond rather than a palette swap */
-    ripple_spawn((int)(s_cam_x >> 8), (int)(s_cam_y >> 8), 0, RIPPLE_LIFE);
+const char *pond_hour_name(void)
+{
+    return s_recording ? REC_HOUR.name : HOURS[s_hour].name;
+}
+
+const char *pond_sky_name(void)
+{
+    return WEATHER[s_sky].name;
 }
 
 bool pond_zoom(int delta)
