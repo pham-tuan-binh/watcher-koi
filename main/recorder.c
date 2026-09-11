@@ -32,6 +32,7 @@
 
 #include "board.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -43,6 +44,14 @@
 #include "sound.h"
 
 static const char *TAG = "recorder";
+
+/* The blow-by-blow of what happens with the card: debug level normally,
+ * and info in the debug build, where it is the point. */
+#if CONFIG_MOCHI_DEBUG_RECORDER
+#define RDBG(...) ESP_LOGI(TAG, __VA_ARGS__)
+#else
+#define RDBG(...) ESP_LOGD(TAG, __VA_ARGS__)
+#endif
 
 #define REC_DIR     DRV_BASE_PATH_SD "/POND"
 #define REC_SR      DRV_AUDIO_SAMPLE_RATE
@@ -110,7 +119,9 @@ static void (*s_state_cb)(bool recording);
 static bool s_mounted;
 static FILE *s_file;
 static char s_path[32];
+static char s_last_path[32];          /* the last file saved, for a check */
 static uint32_t s_dropped;
+static size_t s_ring_high;            /* most bytes waiting in the ring */
 
 static uint8_t s_chunk[CHUNK_BYTES];
 static uint8_t s_buf[WRITE_BYTES];
@@ -123,14 +134,20 @@ static bool sd_ready(void)
 {
     if (s_mounted)
         return true;
-    if (!bsp_sdcard_is_inserted())
+    if (!bsp_sdcard_is_inserted()) {
+        RDBG("Card detect: no card");
         return false;
+    }
+    RDBG("Card detect: card present, rail on");
     board_sdcard_power(true);
+    int64_t t0 = esp_timer_get_time();
     if (bsp_sdcard_init_default() != ESP_OK) {
         ESP_LOGE(TAG, "Card is in but would not mount");
         board_sdcard_power(false);
         return false;
     }
+    RDBG("Card mounted at %s in %d ms", DRV_BASE_PATH_SD,
+         (int)((esp_timer_get_time() - t0) / 1000));
     s_mounted = true;
     return true;
 }
@@ -144,6 +161,7 @@ static void sd_release(void)
         bsp_sdcard_deinit_default();
     s_mounted = false;
     board_sdcard_power(false);
+    RDBG("Card unmounted, rail off");
 }
 
 /// Highest REC%05u.WAV already on the card, plus one. FAT here is 8.3 only,
@@ -180,6 +198,7 @@ static bool wav_open(void)
         ESP_LOGE(TAG, "Could not open %s", s_path);
         return false;
     }
+    RDBG("Opened %s", s_path);
 
     const wav_hdr_t h = wav_header(0);
     if (fwrite(&h, sizeof h, 1, s_file) != 1) {
@@ -196,8 +215,11 @@ static void wav_close(uint32_t data_bytes)
     const wav_hdr_t h = wav_header(data_bytes);
     if (fseek(s_file, 0, SEEK_SET) != 0 || fwrite(&h, sizeof h, 1, s_file) != 1)
         ESP_LOGE(TAG, "Could not patch the header of %s", s_path);
+    else
+        RDBG("Header patched: %u data bytes", (unsigned)data_bytes);
     fclose(s_file);
     s_file = NULL;
+    strcpy(s_last_path, s_path);
 }
 
 // --- Tasks ---
@@ -256,6 +278,7 @@ static void record(void)
     xSemaphoreTake(s_done, 0);           /* drop any stale completion */
     xStreamBufferReset(s_ring);
     s_dropped = 0;
+    s_ring_high = 0;
 
     atomic_store(&s_pulling, true);
     xTaskNotifyGive(s_reader_task);
@@ -263,16 +286,32 @@ static void record(void)
 
     size_t total = 0;
     bool card_gave_up = false;
+    int64_t t_start = esp_timer_get_time(), t_report = t_start;
     while (atomic_load(&s_want) && total < MAX_BYTES) {
+        size_t waiting = xStreamBufferBytesAvailable(s_ring);
+        if (waiting > s_ring_high)
+            s_ring_high = waiting;
+
         size_t n = xStreamBufferReceive(s_ring, s_buf, sizeof s_buf, pdMS_TO_TICKS(100));
         if (n == 0)
             continue;
+        int64_t t0 = esp_timer_get_time();
         if (fwrite(s_buf, 1, n, s_file) != n) {
             ESP_LOGE(TAG, "Write failed, card full or gone");
             card_gave_up = true;
             break;
         }
         total += n;
+
+        int64_t now = esp_timer_get_time();
+        if (now - t0 > 50000)
+            RDBG("Slow write: %u bytes took %d ms", (unsigned)n, (int)((now - t0) / 1000));
+        if (now - t_report >= 1000000) {
+            t_report = now;
+            RDBG("Recording %u s: %u bytes, ring high %u of %u, dropped %u",
+                 (unsigned)((now - t_start) / 1000000), (unsigned)total,
+                 (unsigned)s_ring_high, (unsigned)RING_BYTES, (unsigned)s_dropped);
+        }
     }
 
     atomic_store(&s_pulling, false);
@@ -367,4 +406,19 @@ void recorder_flush(uint32_t timeout_ms)
         return;
     atomic_store(&s_want, false);
     xSemaphoreTake(s_done, pdMS_TO_TICKS(timeout_ms));
+}
+
+bool recorder_card_open(void)
+{
+    return sd_ready();
+}
+
+void recorder_card_close(void)
+{
+    sd_release();
+}
+
+const char *recorder_last_path(void)
+{
+    return s_last_path;
 }

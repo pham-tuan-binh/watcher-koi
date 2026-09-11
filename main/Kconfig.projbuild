@@ -18,6 +18,27 @@ menu "Mochi"
             nobody comes back to stop: it is closed and saved on its own
             once it reaches this length. 16 kHz mono is about 2 MB a minute.
 
+    config MOCHI_DEBUG_RECORDER
+        bool "Debug the SD card and the recorder"
+        default n
+        help
+            A build for checking the recording path without touching the
+            Watcher. The recorder logs every step it takes with the card
+            (detect, rail, mount, file, ring, header, unmount) and the
+            codec logs when it powers up and down. Two seconds after boot
+            a self-test runs: it mounts the card, lists /POND, writes a
+            test file, reads it back and times both, then makes a short
+            recording on its own, reopens the WAV and checks the header
+            against the file and the samples for an actual signal.
+            Everything goes to the serial log. Off for normal use, because
+            a pond that records itself at every boot is not a pond.
+
+    config MOCHI_DEBUG_REC_SEC
+        int "Length of the self-test recording (seconds)"
+        depends on MOCHI_DEBUG_RECORDER
+        range 1 60
+        default 5
+
     config MOCHI_SCENE_DWELL_SEC
         int "Seconds a scene holds before the pond moves on"
         range 0 3600

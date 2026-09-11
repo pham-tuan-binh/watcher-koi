@@ -93,4 +93,6 @@ void app_main(void)
     board_set_btn_long_press_cb(on_long_press);
     board_set_knob_cb(on_knob);
     screen_set_tap_cb(reset_inactivity_timer);
+
+    recorder_debug_start();   /* nothing unless CONFIG_MOCHI_DEBUG_RECORDER */
 }

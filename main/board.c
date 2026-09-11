@@ -19,6 +19,12 @@ static const char *TAG = "board";
 static SemaphoreHandle_t s_codec_mutex;
 static int s_codec_users;
 
+#if CONFIG_MOCHI_DEBUG_RECORDER
+#define CODEC_LOG(...) ESP_LOGI(TAG, __VA_ARGS__)
+#else
+#define CODEC_LOG(...) ESP_LOGD(TAG, __VA_ARGS__)
+#endif
+
 /**
  * Recover the touch I2C bus. bsp_i2c_bus_init() configures the touch I2C pins
  * (GPIO 38/39) as outputs driven low, which can leave the SPD2010 touch
@@ -156,7 +162,7 @@ void board_codec_acquire(void)
         fs.channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
         esp_codec_dev_open(bsp_codec_microphone_get(), &fs);
         esp_log_level_set("i2s_common", ESP_LOG_INFO);
-        ESP_LOGD(TAG, "Codec on");
+        CODEC_LOG("Codec on: amplifier rail up, ES8311 open");
     }
     xSemaphoreGive(s_codec_mutex);
 }
@@ -167,7 +173,7 @@ void board_codec_release(void)
     if (s_codec_users > 0 && --s_codec_users == 0) {
         bsp_codec_dev_stop();
         bsp_exp_io_set_level(BSP_PWR_CODEC_PA, 0);
-        ESP_LOGD(TAG, "Codec off");
+        CODEC_LOG("Codec off: ES8311 suspended, amplifier rail down");
     }
     xSemaphoreGive(s_codec_mutex);
 }

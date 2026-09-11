@@ -189,8 +189,11 @@ The frame log prints once every 30 s with how long a tick takes, how many cells 
 | `MOCHI_POND_KOI_COUNT` | 8 | Koi simulated (max 12) |
 | `MOCHI_POND_LILY_COUNT` | 5 | Lily pads simulated (max 12) |
 | `MOCHI_POND_MOTE_COUNT` | 7 | Drifting motes (max 16) |
+| `MOCHI_DEBUG_RECORDER` | off | Debug build for the card and the recorder, see below |
 
 Populations are starting points; `pond_set_population()` changes them at runtime.
+
+**Debugging the recorder.** Turn on `MOCHI_DEBUG_RECORDER` and the recorder logs every step it takes with the card (detect, rail, mount, file, ring level, header, unmount), the codec logs when it powers up and down, and two seconds after boot a self-test runs without anyone touching the Watcher: it mounts the card, lists `/POND`, writes a 64 KB file and reads it back with timings, then records for `MOCHI_DEBUG_REC_SEC` seconds through the normal path, reopens the WAV and checks the header against the file size and the samples for an actual signal. Anything wrong is marked `<-- FAIL` in the serial log. The code is in [`main/recorder_debug.c`](main/recorder_debug.c).
 
 ## License
 

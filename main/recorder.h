@@ -27,6 +27,18 @@ void recorder_set_state_cb(void (*cb)(bool recording));
 /// to `timeout_ms`. For the paths that are about to cut the power.
 void recorder_flush(uint32_t timeout_ms);
 
+/// For diagnostics. Power the card and mount it (true if a card was there
+/// and mounted), and let it go again. Not while a recording is running.
+bool recorder_card_open(void);
+void recorder_card_close(void);
+
+/// Path of the last recording saved since boot, or "" if none.
+const char *recorder_last_path(void);
+
+/// With CONFIG_MOCHI_DEBUG_RECORDER, start the self-test task described
+/// in the Kconfig help. Without it, does nothing.
+void recorder_debug_start(void);
+
 #ifdef __cplusplus
 }
 #endif
