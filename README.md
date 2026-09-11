@@ -1,4 +1,4 @@
-# Watcher Mochi
+# Watcher Koi
 
 <p align="center">
   <img src="docs/pond.gif" width="412" alt="a pixel koi pond, tapped, rings spreading out">
@@ -161,7 +161,7 @@ Birds, crickets and frogs are a tone, an envelope and a warble. Wind is filtered
 
 ## Recording
 
-Click the knob. The card is mounted on the first click, not at boot, so a Watcher with no card costs nothing and one pushed in later works. The pond only turns red once a file is genuinely open. Recordings land in `/POND` on the card as `REC00001.WAV` upwards, 16 kHz mono 16-bit. The pond goes silent while recording, because the mic and the speaker are millimetres apart, and its day holds still so a recording never gets a sunrise halfway through. A recording nobody stops saves itself at `MOCHI_REC_MAX_SEC`.
+Click the knob. The card is mounted on the first click, not at boot, so a Watcher with no card costs nothing and one pushed in later works. The pond only turns red once a file is genuinely open. Recordings land in `/POND` on the card as `REC00001.WAV` upwards, 16 kHz mono 16-bit. The pond goes silent while recording, because the mic and the speaker are millimetres apart, and its day holds still so a recording never gets a sunrise halfway through. A recording nobody stops saves itself at `KOI_REC_MAX_SEC`.
 
 ## Power
 
@@ -179,21 +179,21 @@ The frame log prints once every 30 s with how long a tick takes, how many cells 
 
 ## Configuration
 
-`idf.py menuconfig`, under **Mochi**:
+`idf.py menuconfig`, under **Koi**:
 
 | Option | Default | |
 | --- | --- | --- |
-| `MOCHI_DEEP_SLEEP_TIMEOUT_SEC` | 60 | Idle seconds before deep sleep |
-| `MOCHI_REC_MAX_SEC` | 600 | Longest recording before it saves itself |
-| `MOCHI_SCENE_DWELL_SEC` | 180 | How long one hour and weather holds; 0 never moves on |
-| `MOCHI_POND_KOI_COUNT` | 8 | Koi simulated (max 12) |
-| `MOCHI_POND_LILY_COUNT` | 5 | Lily pads simulated (max 12) |
-| `MOCHI_POND_MOTE_COUNT` | 7 | Drifting motes (max 16) |
-| `MOCHI_DEBUG_RECORDER` | off | Debug build for the card and the recorder, see below |
+| `KOI_DEEP_SLEEP_TIMEOUT_SEC` | 60 | Idle seconds before deep sleep |
+| `KOI_REC_MAX_SEC` | 600 | Longest recording before it saves itself |
+| `KOI_SCENE_DWELL_SEC` | 180 | How long one hour and weather holds; 0 never moves on |
+| `KOI_COUNT` | 8 | Koi simulated (max 12) |
+| `KOI_LILY_COUNT` | 5 | Lily pads simulated (max 12) |
+| `KOI_MOTE_COUNT` | 7 | Drifting motes (max 16) |
+| `KOI_DEBUG_RECORDER` | off | Debug build for the card and the recorder, see below |
 
 Populations are starting points; `pond_set_population()` changes them at runtime.
 
-**Debugging the recorder.** Turn on `MOCHI_DEBUG_RECORDER` and the recorder logs every step it takes with the card (detect, rail, mount, file, ring level, header, unmount), the codec logs when it powers up and down, and two seconds after boot a self-test runs without anyone touching the Watcher: it mounts the card, lists `/POND`, writes a 64 KB file and reads it back with timings, then records for `MOCHI_DEBUG_REC_SEC` seconds through the normal path, reopens the WAV and checks the header against the file size and the samples for an actual signal. Anything wrong is marked `<-- FAIL` in the serial log. The code is in [`main/recorder_debug.c`](main/recorder_debug.c).
+**Debugging the recorder.** Turn on `KOI_DEBUG_RECORDER` and the recorder logs every step it takes with the card (detect, rail, mount, file, ring level, header, unmount), the codec logs when it powers up and down, and two seconds after boot a self-test runs without anyone touching the Watcher: it mounts the card, lists `/POND`, writes a 64 KB file and reads it back with timings, then records for `KOI_DEBUG_REC_SEC` seconds through the normal path, reopens the WAV and checks the header against the file size and the samples for an actual signal. Anything wrong is marked `<-- FAIL` in the serial log. The code is in [`main/recorder_debug.c`](main/recorder_debug.c).
 
 ## License
 

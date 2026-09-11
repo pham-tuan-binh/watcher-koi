@@ -1,5 +1,5 @@
 /**
- * The recorder's self-test, for CONFIG_MOCHI_DEBUG_RECORDER builds.
+ * The recorder's self-test, for CONFIG_KOI_DEBUG_RECORDER builds.
  *
  * Nothing here needs a finger on the Watcher. Two seconds after boot it
  * puts the card through its paces, then records on its own and checks
@@ -8,7 +8,7 @@
  *   1. detect, power, mount; free space; what is in /POND
  *   2. write a test file, read it back, compare, time both; delete it
  *   3. unmount and power down
- *   4. record for MOCHI_DEBUG_REC_SEC through the normal path
+ *   4. record for KOI_DEBUG_REC_SEC through the normal path
  *   5. reopen the WAV: header against file size, then the samples for
  *      peak, RMS and DC, which is how you tell a working mic from a
  *      recording of zeros
@@ -16,7 +16,7 @@
 
 #include "sdkconfig.h"
 
-#if CONFIG_MOCHI_DEBUG_RECORDER
+#if CONFIG_KOI_DEBUG_RECORDER
 
 #include <dirent.h>
 #include <math.h>
@@ -213,9 +213,9 @@ static void debug_task(void *arg)
 
     card_test();
 
-    ESP_LOGI(TAG, "=== Recording %d s ===", CONFIG_MOCHI_DEBUG_REC_SEC);
+    ESP_LOGI(TAG, "=== Recording %d s ===", CONFIG_KOI_DEBUG_REC_SEC);
     recorder_toggle();
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_MOCHI_DEBUG_REC_SEC * 1000));
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_KOI_DEBUG_REC_SEC * 1000));
     recorder_flush(5000);
     vTaskDelay(pdMS_TO_TICKS(200));    /* let the log lines land in order */
 

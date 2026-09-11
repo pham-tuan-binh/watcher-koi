@@ -9,7 +9,7 @@
 
 static const char *TAG = "main";
 
-#define INACTIVITY_TIMEOUT_MS (CONFIG_MOCHI_DEEP_SLEEP_TIMEOUT_SEC * 1000)
+#define INACTIVITY_TIMEOUT_MS (CONFIG_KOI_DEEP_SLEEP_TIMEOUT_SEC * 1000)
 
 /* The press that wakes the Watcher can still be held when the button driver
  * comes up, and would then land as a click and start a recording nobody
@@ -94,5 +94,5 @@ void app_main(void)
     board_set_knob_cb(on_knob);
     screen_set_tap_cb(reset_inactivity_timer);
 
-    recorder_debug_start();   /* nothing unless CONFIG_MOCHI_DEBUG_RECORDER */
+    recorder_debug_start();   /* nothing unless CONFIG_KOI_DEBUG_RECORDER */
 }

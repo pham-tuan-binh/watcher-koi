@@ -21,7 +21,7 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM=y
 
-CONFIG_MOCHI_DEEP_SLEEP_TIMEOUT_SEC=60
+CONFIG_KOI_DEEP_SLEEP_TIMEOUT_SEC=60
 
 # Dynamic frequency scaling: 240 MHz while a task runs, 80 MHz when idle.
 # Light sleep stays off; the knob and touch polling would defeat it.

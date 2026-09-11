@@ -3,4 +3,4 @@
 cmake_minimum_required(VERSION 3.5)
 set(COMPONENTS main) # Trim build
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(minimal)
+project(watcher-koi)

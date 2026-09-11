@@ -1,6 +1,6 @@
-menu "Mochi"
+menu "Koi"
 
-    config MOCHI_DEEP_SLEEP_TIMEOUT_SEC
+    config KOI_DEEP_SLEEP_TIMEOUT_SEC
         int "Deep sleep inactivity timeout (seconds)"
         range 30 3600
         default 60
@@ -8,7 +8,7 @@ menu "Mochi"
             Seconds of inactivity before the device enters deep sleep.
             Default is 60 (1 minute). A press of the knob button wakes it.
 
-    config MOCHI_REC_MAX_SEC
+    config KOI_REC_MAX_SEC
         int "Maximum recording length (seconds)"
         range 5 3600
         default 600
@@ -18,7 +18,7 @@ menu "Mochi"
             nobody comes back to stop: it is closed and saved on its own
             once it reaches this length. 16 kHz mono is about 2 MB a minute.
 
-    config MOCHI_DEBUG_RECORDER
+    config KOI_DEBUG_RECORDER
         bool "Debug the SD card and the recorder"
         default n
         help
@@ -33,13 +33,13 @@ menu "Mochi"
             Everything goes to the serial log. Off for normal use, because
             a pond that records itself at every boot is not a pond.
 
-    config MOCHI_DEBUG_REC_SEC
+    config KOI_DEBUG_REC_SEC
         int "Length of the self-test recording (seconds)"
-        depends on MOCHI_DEBUG_RECORDER
+        depends on KOI_DEBUG_RECORDER
         range 1 60
         default 5
 
-    config MOCHI_SCENE_DWELL_SEC
+    config KOI_SCENE_DWELL_SEC
         int "Seconds a scene holds before the pond moves on"
         range 0 3600
         default 180
@@ -57,7 +57,7 @@ menu "Mochi"
             Recording holds the clock: the pond's day waits while it is
             listening, and picks up where it left off afterwards.
 
-    config MOCHI_POND_KOI_COUNT
+    config KOI_COUNT
         int "Number of koi in the pond"
         range 1 12
         default 8
@@ -67,7 +67,7 @@ menu "Mochi"
             screen drifts either side of this. Changeable at runtime with
             pond_set_population().
 
-    config MOCHI_POND_LILY_COUNT
+    config KOI_LILY_COUNT
         int "Number of lily pads"
         range 0 12
         default 5
@@ -76,7 +76,7 @@ menu "Mochi"
             randomly on every boot and drift around afterwards. Set to 0
             for open water.
 
-    config MOCHI_POND_MOTE_COUNT
+    config KOI_MOTE_COUNT
         int "Number of drifting motes"
         range 0 16
         default 7

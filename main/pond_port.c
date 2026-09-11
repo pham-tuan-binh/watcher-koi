@@ -188,10 +188,10 @@ void pond_port_init(void)
         .log = log_line,
     };
     const pond_config_t cfg = {
-        .koi = CONFIG_MOCHI_POND_KOI_COUNT,
-        .pads = CONFIG_MOCHI_POND_LILY_COUNT,
-        .motes = CONFIG_MOCHI_POND_MOTE_COUNT,
-        .dwell_sec = CONFIG_MOCHI_SCENE_DWELL_SEC,
+        .koi = CONFIG_KOI_COUNT,
+        .pads = CONFIG_KOI_LILY_COUNT,
+        .motes = CONFIG_KOI_MOTE_COUNT,
+        .dwell_sec = CONFIG_KOI_SCENE_DWELL_SEC,
         .seed = esp_random(),
     };
     pond_init(&cfg, &render);

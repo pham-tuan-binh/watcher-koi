@@ -35,7 +35,7 @@ void recorder_card_close(void);
 /// Path of the last recording saved since boot, or "" if none.
 const char *recorder_last_path(void);
 
-/// With CONFIG_MOCHI_DEBUG_RECORDER, start the self-test task described
+/// With CONFIG_KOI_DEBUG_RECORDER, start the self-test task described
 /// in the Kconfig help. Without it, does nothing.
 void recorder_debug_start(void);
 

@@ -19,7 +19,7 @@ static const char *TAG = "board";
 static SemaphoreHandle_t s_codec_mutex;
 static int s_codec_users;
 
-#if CONFIG_MOCHI_DEBUG_RECORDER
+#if CONFIG_KOI_DEBUG_RECORDER
 #define CODEC_LOG(...) ESP_LOGI(TAG, __VA_ARGS__)
 #else
 #define CODEC_LOG(...) ESP_LOGD(TAG, __VA_ARGS__)

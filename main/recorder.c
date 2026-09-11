@@ -47,7 +47,7 @@ static const char *TAG = "recorder";
 
 /* The blow-by-blow of what happens with the card: debug level normally,
  * and info in the debug build, where it is the point. */
-#if CONFIG_MOCHI_DEBUG_RECORDER
+#if CONFIG_KOI_DEBUG_RECORDER
 #define RDBG(...) ESP_LOGI(TAG, __VA_ARGS__)
 #else
 #define RDBG(...) ESP_LOGD(TAG, __VA_ARGS__)
@@ -61,7 +61,7 @@ static const char *TAG = "recorder";
 #define RING_BYTES  (128 * 1024)       /* ~4 s of card stall absorbed */
 #define WRITE_BYTES (8 * 1024)         /* the biggest bite of the ring
                                           the writer takes at once     */
-#define MAX_BYTES   ((size_t)CONFIG_MOCHI_REC_MAX_SEC * REC_BYTES_PER_SEC)
+#define MAX_BYTES   ((size_t)CONFIG_KOI_REC_MAX_SEC * REC_BYTES_PER_SEC)
 
 /* Long enough to cover a mic read already in flight when we stopped. */
 #define DRAIN_MS    60
