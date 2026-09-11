@@ -25,6 +25,7 @@ static int64_t s_boot_us;
 static void reset_inactivity_timer(void)
 {
     xTimerReset(s_inactivity_timer, 0);
+    screen_activity();
 }
 
 static void inactivity_timer_cb(TimerHandle_t t)

@@ -21,6 +21,16 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM=y
 
+CONFIG_MOCHI_DEEP_SLEEP_TIMEOUT_SEC=60
+
+# Dynamic frequency scaling: 240 MHz while a task runs, 80 MHz when idle.
+# Light sleep stays off; the knob and touch polling would defeat it.
+# For power measurements add CONFIG_PM_PROFILING=y and
+# CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y (with
+# CONFIG_FREERTOS_USE_TRACE_FACILITY=y and
+# CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y): the frame log then
+# carries time at each clock and per task.
+CONFIG_PM_ENABLE=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

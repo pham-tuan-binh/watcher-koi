@@ -28,37 +28,80 @@
  * A time of day composes with a weather into one of those blocks, and
  * every change of scene, the red one it wears while recording included, is
  * the same byte-wise crossfade between two of them.
+ *
+ * None of this knows what it is running on. The screen size, the buffers
+ * the pixels go into and what happens to them afterwards, the sounds and
+ * the log all come in through the pond_render_t in pond.h. This file has
+ * no platform includes and compiles anywhere.
  */
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
-#include "esp_log.h"
-#include "esp_timer.h"
-#include "esp_random.h"
-#include "lvgl.h"
-#include "sensecap-watcher.h"
 #include "pond.h"
-#include "sound.h"
 
-static const char *TAG = "pond";
+// --- The world outside ---
+//
+// Everything the pond needs from the platform arrives through s_rc, set at
+// init and never touched again. See pond.h for the contract.
+
+static pond_render_t s_rc;
+static pond_config_t s_cfg;
+static int64_t s_now_us;          /* the clock, as of the current tick */
+
+static void plog(const char *fmt, ...)
+{
+    if (!s_rc.log)
+        return;
+    char line[96];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    s_rc.log(s_rc.ctx, line);
+}
+
+static void emit(pond_sound_t which)
+{
+    if (s_rc.sound)
+        s_rc.sound(s_rc.ctx, which);
+}
+
+/// RGB565, byte-swapped if the panel wants it that way. Decided once, when
+/// the palette is built, so it costs nothing per pixel.
+static uint16_t pack565(int r, int g, int b)
+{
+    uint16_t v = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    return s_rc.swap_bytes ? (uint16_t)((v << 8) | (v >> 8)) : v;
+}
+
+/// xorshift32: plenty for where a leaf drifts, and the same on every chip.
+static uint32_t s_rng = 2463534242u;
+static uint32_t rnd(uint32_t n)
+{
+    s_rng ^= s_rng << 13;
+    s_rng ^= s_rng >> 17;
+    s_rng ^= s_rng << 5;
+    return n ? s_rng % n : 0;
+}
 
 // --- Geometry ---
 //
-// World coordinates are in world pixels. At the widest zoom one world pixel
-// covers PIX_MIN screen pixels and the world exactly fills the panel, which
-// fixes the size of every buffer below.
+// World coordinates are in world pixels. The world is WORLD_W across
+// whatever the screen, which fixes the size of every buffer below; at the
+// widest zoom one world pixel covers s_pix_min screen pixels, the smallest
+// whole number that fits the world on the screen. On a 412 pixel panel that
+// is 4, and the world exactly fills it.
 
-#define PIX_MIN   4
-#define WORLD_W   (DRV_LCD_H_RES / PIX_MIN)   /* 103 */
+#define WORLD_W   103
 #define WORLD_CX  (WORLD_W / 2)
 #define WORLD_CY  (WORLD_W / 2)
 #define POND_R    (WORLD_W / 2)               /* the display is round */
-#define FRAME_MS  40
 
 /* Everything fades out with distance, reaching black a little past the rim.
  * Roaming limits sit inside that, so wanderers dim rather than blink out. */
@@ -68,9 +111,12 @@ static const char *TAG = "pond";
 #define PAD_ROAM  (POND_R + 3)
 #define MOTE_ROAM (POND_R + 2)
 
-/* Zoom detents, in screen pixels per world pixel. */
-static const uint8_t ZOOM_PIX[] = { 4, 5, 6, 8, 10, 13 };
-#define ZOOM_STEPS ((int)(sizeof ZOOM_PIX / sizeof ZOOM_PIX[0]))
+/* Zoom detents, in quarters of the widest zoom's pixel size: 1x, 1.25x,
+ * 1.5x, 2x, 2.5x, 3.25x. On the Watcher that is 4, 5, 6, 8, 10 and 13
+ * screen pixels per world pixel. */
+static const uint8_t ZOOM_NUM[] = { 4, 5, 6, 8, 10, 13 };
+#define ZOOM_STEPS ((int)(sizeof ZOOM_NUM / sizeof ZOOM_NUM[0]))
+static int s_pix_min;
 
 #define MAX_RIPPLES 12
 
@@ -103,7 +149,8 @@ static const uint8_t MAT_RGB[MAT_COUNT][3] = {
 /* How much of the base colour survives at each light level, in 1/256ths. */
 static const uint16_t LEVEL_MIX[LEVELS] = { 26, 56, 100, 150, 205, 256 };
 
-static lv_color_t s_pal[MAT_COUNT * LEVELS];
+static uint16_t s_pal[MAT_COUNT * LEVELS];
+static bool s_pal_dirty;
 
 // --- Looks: the time of day, the weather, and the pond listening ---
 //
@@ -218,7 +265,7 @@ static const hour_t REC_HOUR = {
 /* Wall clock, not a frame count. A frame is nominally FRAME_MS but the
  * timer only fires once the last one has been drawn, so the real period
  * runs nearer 49 ms, and counting frames made every dwell 22% long. */
-#define DWELL_US ((int64_t)CONFIG_MOCHI_SCENE_DWELL_SEC * 1000000)
+#define DWELL_US ((int64_t)s_cfg.dwell_sec * 1000000)
 
 /* Fast forward, which a finger held on the glass turns on. The day steps on
  * every couple of seconds instead of every dwell, with a crossfade short
@@ -314,9 +361,10 @@ static void palette_build(const look_t *lk)
                 g = mix(g, lk->glow[1], 36);
                 b = mix(b, lk->glow[2], 36);
             }
-            s_pal[m * LEVELS + l] = lv_color_make(r, g, b);
+            s_pal[m * LEVELS + l] = pack565(r, g, b);
         }
     }
+    s_pal_dirty = true;   /* every cell on screen has just changed colour */
 }
 
 /// Smoothstep on 0..256, so a turn eases in and out rather than starting
@@ -417,11 +465,6 @@ static int isqrt32(int32_t v)
     return (int)x;
 }
 
-static uint32_t rnd(uint32_t n)
-{
-    return n ? esp_random() % n : 0;
-}
-
 /// How lit a thing at (wx, wy) should be, 256 in the middle of the pond down
 /// to 0 out past the rim. Everything that has its own colour is scaled by
 /// this, so wanderers fade into the dark instead of floating in the void.
@@ -490,17 +533,23 @@ static uint8_t s_mat[WORLD_W][WORLD_W];
 static int16_t s_light[WORLD_W][WORLD_W];
 static int8_t s_dither[4][4];
 
-static lv_color_t s_row[DRV_LCD_H_RES];
-static lv_color_t *s_canvas_buf;
-static lv_obj_t *s_canvas;
+
+/* What each visible cell was painted with last frame, as a palette index,
+ * so the blit can find the rows that actually changed and leave the rest
+ * of the panel alone. */
+static uint8_t s_prev_idx[WORLD_W][WORLD_W];
+static bool s_prev_valid;      /* false forces a full repaint next blit */
+static uint32_t s_dirty_cells, s_seen_cells;     /* for the frame log */
+static uint64_t s_flushed_px;
+static uint32_t s_drawn_frames;
 static uint32_t s_frame;
 static uint16_t s_next_surface;
 static uint16_t s_next_distant;
 
 // --- Camera ---
 
-static int s_zoom;                  /* index into ZOOM_PIX */
-static int s_pix = PIX_MIN;         /* screen pixels per world pixel */
+static int s_zoom;                  /* index into ZOOM_NUM */
+static int s_pix = 4;               /* screen pixels per world pixel */
 static int s_gw = WORLD_W;          /* visible cells across */
 static int s_gh = WORLD_W;
 static int32_t s_cam_x, s_cam_y;    /* 8.8 world coords of the view centre */
@@ -522,9 +571,9 @@ static inline void light_add(int vx, int vy, int amount)
 
 static void camera_apply_zoom(void)
 {
-    s_pix = ZOOM_PIX[s_zoom];
-    s_gw = (DRV_LCD_H_RES + s_pix - 1) / s_pix;
-    s_gh = (DRV_LCD_V_RES + s_pix - 1) / s_pix;
+    s_pix = s_pix_min * ZOOM_NUM[s_zoom] / 4;
+    s_gw = (s_rc.width + s_pix - 1) / s_pix;
+    s_gh = (s_rc.height + s_pix - 1) / s_pix;
 }
 
 static void camera_update(void)
@@ -1210,7 +1259,7 @@ static void scene_advance(void)
     s_sky = s_timelapse ? (s_sky + 1) % SKY_COUNT : sky_pick();
 
     look_retarget(s_timelapse ? FADE_FAST_FRAMES : FADE_SKY_FRAMES);
-    ESP_LOGI(TAG, "Scene: %s, %s", HOURS[s_hour].name, WEATHER[s_sky].name);
+    plog("Scene: %s, %s", HOURS[s_hour].name, WEATHER[s_sky].name);
 }
 
 /// How long the scene on screen holds before the day moves on.
@@ -1224,9 +1273,11 @@ static int64_t scene_dwell(void)
 /// up with a full dwell in hand.
 static void scene_tick(void)
 {
-    int64_t now = esp_timer_get_time();
+    int64_t now = s_now_us;
     int64_t dwell = scene_dwell();
 
+    if (s_scene_due == 0)
+        s_scene_due = now + dwell;
     if (dwell == 0 || s_recording) {
         s_scene_due = now + dwell;
         return;
@@ -1253,7 +1304,7 @@ static void rain_step(void)
                  WORLD_CY + ((SIN(a) * d) >> 8), 0, RIPPLE_LIFE / 5);
 
     if (rnd(5) == 0)
-        sound_play(SOUND_RAIN);
+        emit(POND_SOUND_RAIN);
 }
 
 /// What can be heard in the scene besides the water. The rates live in the
@@ -1264,62 +1315,139 @@ static void rain_step(void)
 static void ambience_step(void)
 {
     if (s_look.birds && rnd(2048) < s_look.birds)
-        sound_play(SOUND_BIRD);
+        emit(POND_SOUND_BIRD);
     if (s_look.insects && rnd(2048) < s_look.insects)
-        sound_play(SOUND_INSECT);
+        emit(POND_SOUND_INSECT);
     if (s_look.frogs && rnd(2048) < s_look.frogs)
-        sound_play(SOUND_FROG);
+        emit(POND_SOUND_FROG);
     if (s_look.wind && rnd(2048) < s_look.wind)
-        sound_play(SOUND_WIND);
+        emit(POND_SOUND_WIND);
 }
 
 // --- Frame ---
 
-/// Expand the visible cells into the canvas, s_pix screen pixels each. The
-/// zoom steps do not all divide the panel evenly, so the last block of a row
-/// or column is clipped. It falls outside the round bezel anyway.
+/* Getting the cells onto the glass, s_pix screen pixels each. The zoom
+ * steps do not all divide the panel evenly, so the last block of a row or
+ * column is clipped; it falls outside the round bezel anyway. */
+
+/* A band is `rows` screen rows of `w` pixels each, starting at screen
+ * column `x0`, packed. The panel wants columns in fours, so the span is
+ * widened to that before anything is drawn. */
+typedef struct {
+    uint16_t *buf;
+    int x0, w;        /* screen columns covered */
+    int y0, rows;     /* screen rows covered */
+} band_t;
+
+static void band_flush(band_t *b)
+{
+    s_rc.end_band(s_rc.ctx, b->x0, b->y0, b->w, b->rows, b->buf);
+    s_flushed_px += (uint64_t)b->w * (uint64_t)b->rows;
+    b->rows = 0;
+}
+
 static void blit(void)
 {
     const int pix = s_pix;
-    lv_color_t *dst = s_canvas_buf;
-    int rows_left = DRV_LCD_V_RES;
+    const bool all = !s_prev_valid || s_pal_dirty;
 
-    for (int vy = 0; vy < s_gh && rows_left > 0; vy++) {
+    s_drawn_frames++;
+
+    /* Pass one: which cells changed. Each visible cell is quantised to a
+     * palette index and compared with what it was; the changed span of
+     * every row is kept, in cells. Nothing is drawn yet. */
+    static int16_t cx0[WORLD_W], cx1[WORLD_W];
+    for (int vy = 0; vy < s_gh; vy++) {
         const uint8_t *mrow = s_mat[vy];
         const int16_t *lrow = s_light[vy];
         const int8_t *drow = s_dither[vy & 3];
+        uint8_t *prow = s_prev_idx[vy];
 
-        int i = 0;
-        for (int vx = 0; vx < s_gw && i < DRV_LCD_H_RES; vx++) {
+        cx0[vy] = -1;
+        for (int vx = 0; vx < s_gw; vx++) {
             int l = lrow[vx] + drow[vx & 3];
             int level = (l * LEVELS) >> 8;
             if (level < 0) level = 0;
             if (level >= LEVELS) level = LEVELS - 1;
 
-            lv_color_t c = s_pal[mrow[vx] * LEVELS + level];
-            int n = DRV_LCD_H_RES - i;
-            if (n > pix)
-                n = pix;
-            while (n--)
-                s_row[i++] = c;
+            uint8_t idx = (uint8_t)(mrow[vx] * LEVELS + level);
+            if (all || prow[vx] != idx) {
+                prow[vx] = idx;
+                if (cx0[vy] < 0) cx0[vy] = (int16_t)vx;
+                cx1[vy] = (int16_t)vx;
+                s_dirty_cells++;
+            }
         }
-
-        int n = rows_left < pix ? rows_left : pix;
-        rows_left -= n;
-        while (n--) {
-            memcpy(dst, s_row, DRV_LCD_H_RES * sizeof(lv_color_t));
-            dst += DRV_LCD_H_RES;
-        }
+        s_seen_cells += (uint32_t)s_gw;
     }
+
+    /* Pass two: runs of changed rows become bands, each at most band_rows
+     * screen rows tall (band_rows) and as wide as the union of its rows'
+     * spans, in fours because panels want it so. A band is expanded from
+     * the palette indices straight into its packed place in the buffer the
+     * host hands out, one row per world row and then copied down `pix`
+     * times. */
+    for (int vy = 0; vy < s_gh;) {
+        if (cx0[vy] < 0) {
+            vy++;
+            continue;
+        }
+        int y0 = vy * pix;
+        int end = vy;
+        int px0 = cx0[vy], px1 = cx1[vy];
+        while (end + 1 < s_gh && cx0[end + 1] >= 0
+               && (end + 2 - vy) * pix <= s_rc.band_rows) {
+            end++;
+            if (cx0[end] < px0) px0 = cx0[end];
+            if (cx1[end] > px1) px1 = cx1[end];
+        }
+        px0 = (px0 * pix) & ~3;
+        px1 = ((px1 + 1) * pix + 3) & ~3;
+        if (px1 > s_rc.width) px1 = s_rc.width;
+        int w = px1 - px0;
+        int rows_total = (end + 1) * pix;
+        if (rows_total > s_rc.height) rows_total = s_rc.height;
+        rows_total -= y0;
+
+        band_t band = { .buf = s_rc.begin_band(s_rc.ctx), .x0 = px0, .w = w,
+                        .y0 = y0, .rows = rows_total };
+
+        uint16_t *dst = band.buf;
+        int rows_left = rows_total;
+        for (int r = vy; r <= end && rows_left > 0; r++) {
+            const uint8_t *prow = s_prev_idx[r];
+            /* one packed row: cells overlapping [px0, px1) */
+            int x = px0;
+            for (int vx = px0 / pix; x < px1; vx++) {
+                uint16_t c = s_pal[prow[vx]];
+                int cell_end = (vx + 1) * pix;
+                if (cell_end > px1) cell_end = px1;
+                while (x < cell_end) {
+                    dst[x - px0] = c;
+                    x++;
+                }
+            }
+            /* and the same row again for the rest of the world row */
+            int rows = rows_left < pix ? rows_left : pix;
+            for (int k = 1; k < rows; k++)
+                memcpy(dst + (size_t)k * w, dst, (size_t)w * sizeof(uint16_t));
+            dst += (size_t)rows * w;
+            rows_left -= rows;
+        }
+        band_flush(&band);
+        vy = end + 1;
+    }
+
+    s_prev_valid = true;
+    s_pal_dirty = false;
 }
 
 /// One extra pass of world motion, with nothing drawn: what fast forward
 /// spends its extra time on. Only the things that move. Rain, the scene
 /// clock and everything that makes a noise stay at one pass a frame, so
 /// running fast never turns the ambience into a stutter of birds.
-static void world_substep(void)
+static void world_motion(void)
 {
-    s_frame++;
     for (int i = 0; i < s_koi_count; i++)
         koi_update(&s_koi[i]);
     ripples_update();
@@ -1329,7 +1457,16 @@ static void world_substep(void)
         mote_update(&s_motes[i]);
 }
 
-static void pond_step(void)
+static void world_substep(void)
+{
+    s_frame++;
+    world_motion();
+}
+
+/// One tick of the pond. The world always moves; it is only drawn when
+/// `draw` is set, which the idle tier uses to halve what goes to the panel
+/// without slowing the day or the fish down.
+static void pond_step(bool draw)
 {
     s_frame++;
     look_step();
@@ -1341,7 +1478,7 @@ static void pond_step(void)
         /* a koi nosing the surface somewhere */
         const koi_t *k = &s_koi[rnd((uint32_t)s_koi_count)];
         ripple_spawn((int)(k->x >> 8), (int)(k->y >> 8), 0, RIPPLE_LIFE / 2);
-        sound_play(SOUND_SURFACE);
+        emit(POND_SOUND_SURFACE);
         s_next_surface = (uint16_t)(90 + rnd(160));
     }
 
@@ -1351,13 +1488,18 @@ static void pond_step(void)
         int d = POND_R - 6 - (int)rnd(8);
         ripple_spawn(WORLD_CX + ((COS(a) * d) >> 8),
                      WORLD_CY + ((SIN(a) * d) >> 8), 0, RIPPLE_LIFE * 2 / 3);
-        sound_play(SOUND_DISTANT);
+        emit(POND_SOUND_DISTANT);
         s_next_distant = (uint16_t)(220 + rnd(420));
     }
 
     if (s_timelapse)
         for (int i = 1; i < TIMELAPSE_STEPS; i++)
             world_substep();
+
+    if (!draw) {
+        world_motion();
+        return;
+    }
 
     camera_update();
     draw_water();
@@ -1386,13 +1528,27 @@ static void pond_step(void)
     }
 
     blit();
-    lv_obj_invalidate(s_canvas);
 }
 
-static void frame_cb(lv_timer_t *t)
+void pond_tick(int64_t now_us, bool draw)
 {
-    (void)t;
-    pond_step();
+    s_now_us = now_us;
+    pond_step(draw);
+}
+
+void pond_stats(pond_stats_t *out, bool reset)
+{
+    if (out) {
+        out->frames_drawn = s_drawn_frames;
+        out->cells_seen = s_seen_cells;
+        out->cells_changed = s_dirty_cells;
+        out->pixels_sent = s_flushed_px;
+    }
+    if (reset) {
+        s_drawn_frames = 0;
+        s_seen_cells = s_dirty_cells = 0;
+        s_flushed_px = 0;
+    }
 }
 
 // --- Setup ---
@@ -1463,8 +1619,21 @@ void pond_get_population(int *koi, int *pads, int *motes)
     if (motes) *motes = s_mote_count;
 }
 
-void pond_init(lv_obj_t *parent)
+void pond_init(const pond_config_t *cfg, const pond_render_t *render)
 {
+    s_cfg = *cfg;
+    s_rc = *render;
+    if (s_rc.band_rows < 16)
+        s_rc.band_rows = 16;
+    if (cfg->seed)
+        s_rng = cfg->seed;
+
+    /* the smallest whole number of screen pixels per world pixel that
+     * still gets the whole world onto the screen */
+    s_pix_min = (s_rc.width + WORLD_W - 1) / WORLD_W;
+    if (s_pix_min < 1)
+        s_pix_min = 1;
+
     trig_init();
     dither_init();
     sprite_init();
@@ -1481,37 +1650,20 @@ void pond_init(lv_obj_t *parent)
     look_compose(&s_look, &HOURS[s_hour], &WEATHER[s_sky]);
     s_look_from = s_look_to = s_look;
     palette_build(&s_look);
-    s_scene_due = esp_timer_get_time() + DWELL_US;
+    s_scene_due = 0;   /* set from the clock on the first tick */
 
-    pond_set_population(CONFIG_MOCHI_POND_KOI_COUNT,
-                        CONFIG_MOCHI_POND_LILY_COUNT,
-                        CONFIG_MOCHI_POND_MOTE_COUNT);
+    pond_set_population(cfg->koi, cfg->pads, cfg->motes);
 
     s_next_surface = (uint16_t)(90 + rnd(160));
     s_next_distant = (uint16_t)(220 + rnd(420));
 
-    size_t buf_size = (size_t)DRV_LCD_H_RES * DRV_LCD_V_RES * sizeof(lv_color_t);
-    s_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-    if (!s_canvas_buf) {
-        ESP_LOGE(TAG, "Failed to allocate %u byte canvas", (unsigned)buf_size);
-        return;
-    }
-
-    s_canvas = lv_canvas_create(parent);
-    lv_canvas_set_buffer(s_canvas, s_canvas_buf, DRV_LCD_H_RES, DRV_LCD_V_RES,
-                         LV_IMG_CF_TRUE_COLOR);
-    lv_obj_center(s_canvas);
-
-    pond_step();   /* have something on screen before the backlight comes up */
-    lv_timer_create(frame_cb, FRAME_MS, NULL);
-
-    ESP_LOGI(TAG, "Pond ready: %dx%d world, %d koi, %d pads, %d motes",
+    plog("Pond ready: %dx%d world, %d koi, %d pads, %d motes",
              WORLD_W, WORLD_W, s_koi_count, s_pad_count, s_mote_count);
-    ESP_LOGI(TAG, "Scene: %s, %s (holding %d s)", HOURS[s_hour].name,
-             WEATHER[s_sky].name, CONFIG_MOCHI_SCENE_DWELL_SEC);
+    plog("Scene: %s, %s (holding %d s)", HOURS[s_hour].name,
+         WEATHER[s_sky].name, s_cfg.dwell_sec);
 }
 
-void pond_tap(lv_coord_t x, lv_coord_t y)
+void pond_tap(int x, int y)
 {
     int wx = s_ox + x / s_pix;
     int wy = s_oy + y / s_pix;
@@ -1550,8 +1702,8 @@ void pond_set_timelapse(bool on)
     if (on && !s_recording)
         scene_advance();
 
-    s_scene_due = esp_timer_get_time() + scene_dwell();
-    ESP_LOGI(TAG, "Fast forward %s", on ? "on" : "off");
+    s_scene_due = s_now_us + scene_dwell();
+    plog("Fast forward %s", on ? "on" : "off");
 }
 
 const char *pond_hour_name(void)
@@ -1564,16 +1716,34 @@ const char *pond_sky_name(void)
     return WEATHER[s_sky].name;
 }
 
+/* The backlight follows the light in the scene. Ambient runs from about 32
+ * on a rainy night to 172 on a clear noon, and the glass need not be lit
+ * any harder for a dark pond than for a bright one: on an IPS panel a dim
+ * backlight makes the night blacker rather than greyer. 30% to 70%. */
+int pond_backlight_percent(void)
+{
+    int pct = 30 + ((int)s_look.ambient * 40) / 172;
+    if (pct < 30) pct = 30;
+    if (pct > 70) pct = 70;
+    return pct;
+}
+
 bool pond_zoom(int delta)
 {
     int z = s_zoom + delta;
     if (z < 0) z = 0;
     if (z >= ZOOM_STEPS) z = ZOOM_STEPS - 1;
-    if (z == s_zoom)
+    /* on a small screen two detents can round to the same pixel size */
+    int dir = delta > 0 ? 1 : -1;
+    while (z != s_zoom && z + dir >= 0 && z + dir < ZOOM_STEPS
+           && s_pix_min * ZOOM_NUM[z] / 4 == s_pix)
+        z += dir;
+    if (z == s_zoom || s_pix_min * ZOOM_NUM[z] / 4 == s_pix)
         return false;
 
     s_zoom = z;
     camera_apply_zoom();
+    s_prev_valid = false;   /* every cell moved: repaint the lot */
 
     /* wide open the camera sits on the pond; any closer and it picks a koi
      * to drift after, so zooming in never lands on empty water */

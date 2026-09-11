@@ -3,16 +3,21 @@
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_rom_sys.h"
 #include "esp_sleep.h"
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_io_expander_pca95xx_16bit.h"
 #include "sensecap-watcher.h"
 #include "board.h"
 
 static const char *TAG = "board";
+
+static SemaphoreHandle_t s_codec_mutex;
+static int s_codec_users;
 
 /**
  * Recover the touch I2C bus. bsp_i2c_bus_init() configures the touch I2C pins
@@ -87,7 +92,91 @@ void board_init(void)
     lv_disp_t *disp = bsp_lvgl_init();
     assert(disp);
 
+    /* The BSP brings every rail up at boot. This firmware never talks to
+     * the Himax vision chip or its camera, the Grove socket or the battery
+     * ADC divider, and the card is only wanted while recording, so those
+     * four go straight back off. The recorder raises the card's own rail
+     * for as long as it has a file open. */
+    bsp_exp_io_set_level(BSP_PWR_AI_CHIP | BSP_PWR_GROVE | BSP_PWR_BAT_ADC
+                         | BSP_PWR_SDCARD, 0);
+    ESP_LOGI(TAG, "Unused rails off: AI chip, Grove, battery ADC, SD card");
+
+    /* The codec came up open, streaming silence with the amplifier on.
+     * Nothing wants it yet: the first sound, or the first recording, takes
+     * it through board_codec_acquire(). */
+    s_codec_mutex = xSemaphoreCreateMutex();
+    bsp_codec_dev_stop();
+    bsp_exp_io_set_level(BSP_PWR_CODEC_PA, 0);
+    /* six lines of codec chatter per plop is a lot of plops */
+    esp_log_level_set("I2S_IF", ESP_LOG_WARN);
+    esp_log_level_set("Adev_Codec", ESP_LOG_WARN);
+
+    /* Run flat out while any task is running, and drop to 80 MHz whenever
+     * both cores are idle, which after a frame is most of the time. APB
+     * stays at 80 MHz either way, so no peripheral notices. */
+    const esp_pm_config_t pm = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = false,
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm));
+    ESP_LOGI(TAG, "DFS on: %d to %d MHz", pm.min_freq_mhz, pm.max_freq_mhz);
+
     ESP_LOGI(TAG, "Board init done");
+}
+
+// --- Codec power ---
+
+/* The sound task and the recorder each hold the codec for as long as they
+ * need it, and it is powered for as long as anybody holds it. Between a
+ * plop and the next one the ES8311 is suspended, the I2S clocks are
+ * stopped and the amplifier rail is off. */
+void board_codec_acquire(void)
+{
+    xSemaphoreTake(s_codec_mutex, portMAX_DELAY);
+    if (s_codec_users++ == 0) {
+        bsp_exp_io_set_level(BSP_PWR_CODEC_PA, 1);
+
+        /* The same opens the BSP's resume does, minus the closes it puts
+         * in front of them: closing a closed device only logs an error.
+         * Both devices open together because they share one ES8311 and
+         * closing either one suspends the chip under the other. */
+        esp_codec_dev_sample_info_t fs = {
+            .sample_rate = DRV_AUDIO_SAMPLE_RATE,
+            .channel = DRV_AUDIO_CHANNELS,
+            .bits_per_sample = DRV_AUDIO_SAMPLE_BITS,
+        };
+        /* open() disables the I2S channel before it reclocks it, whether or
+         * not it was running, and the driver logs an error for the second
+         * case. Ours always is the second case. */
+        esp_log_level_set("i2s_common", ESP_LOG_NONE);
+        esp_codec_dev_set_in_gain(bsp_codec_microphone_get(), DRV_AUDIO_MIC_GAIN);
+        esp_codec_dev_open(bsp_codec_speaker_get(), &fs);
+        fs.channel = 2;
+        fs.channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
+        esp_codec_dev_open(bsp_codec_microphone_get(), &fs);
+        esp_log_level_set("i2s_common", ESP_LOG_INFO);
+        ESP_LOGD(TAG, "Codec on");
+    }
+    xSemaphoreGive(s_codec_mutex);
+}
+
+void board_codec_release(void)
+{
+    xSemaphoreTake(s_codec_mutex, portMAX_DELAY);
+    if (s_codec_users > 0 && --s_codec_users == 0) {
+        bsp_codec_dev_stop();
+        bsp_exp_io_set_level(BSP_PWR_CODEC_PA, 0);
+        ESP_LOGD(TAG, "Codec off");
+    }
+    xSemaphoreGive(s_codec_mutex);
+}
+
+void board_sdcard_power(bool on)
+{
+    bsp_exp_io_set_level(BSP_PWR_SDCARD, on ? 1 : 0);
+    if (on)
+        vTaskDelay(pdMS_TO_TICKS(50));   /* let the card come up before the first command */
 }
 
 // --- Button callbacks ---

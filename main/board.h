@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -29,6 +30,17 @@ void board_set_knob_cb(void (*cb)(int dir));
 
 /// Enter deep sleep. Wakes on button press (or after time_sec seconds if > 0).
 void board_deep_sleep(uint32_t time_sec);
+
+/// Switch the SD card's power rail. Off at boot; the recorder raises it
+/// before mounting and drops it again once the file is closed.
+void board_sdcard_power(bool on);
+
+/// Hold the audio codec powered. Counted: the codec, its I2S clocks and the
+/// amplifier rail come up on the first acquire and go down again on the
+/// release that matches it. Every acquire needs a release. After a resume
+/// the output volume is back at the codec's default, so set it again.
+void board_codec_acquire(void);
+void board_codec_release(void);
 
 /// Set LCD backlight brightness (0-100%).
 void board_set_lcd_brightness(int percent);

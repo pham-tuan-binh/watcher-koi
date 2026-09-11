@@ -156,6 +156,7 @@ static void lvgl_port_task_deinit(void);
 static bool lvgl_port_flush_ready_callback(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx);
 #endif
 static void lvgl_port_flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map);
+static void lvgl_port_flush_wait_callback(lv_disp_drv_t *drv);
 static void lvgl_port_update_callback(lv_disp_drv_t *drv);
 #ifdef ESP_LVGL_PORT_TOUCH_COMPONENT
 static void lvgl_port_touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data);
@@ -345,6 +346,10 @@ lv_disp_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *disp_cfg)
     disp_ctx->disp_drv.hor_res = disp_cfg->hres;
     disp_ctx->disp_drv.ver_res = disp_cfg->vres;
     disp_ctx->disp_drv.flush_cb = lvgl_port_flush_callback;
+    /* Without this LVGL spins on the flushing flag for the whole DMA
+     * transfer, which at 240 MHz is most of a frame. Block instead, and
+     * let the transfer-done interrupt wake us. */
+    disp_ctx->disp_drv.wait_cb = lvgl_port_flush_wait_callback;
     disp_ctx->disp_drv.drv_update_cb = lvgl_port_update_callback;
     disp_ctx->disp_drv.draw_buf = disp_buf;
     disp_ctx->disp_drv.user_data = disp_ctx;
@@ -847,9 +852,24 @@ static bool lvgl_port_flush_ready_callback(esp_lcd_panel_io_handle_t panel_io, e
     lv_disp_drv_t *disp_drv = (lv_disp_drv_t *)user_ctx;
     assert(disp_drv != NULL);
     lv_disp_flush_ready(disp_drv);
-    return false;
+
+    BaseType_t woken = pdFALSE;
+    if (lvgl_port_ctx.lvgl_task.handle)
+    {
+        vTaskNotifyGiveFromISR(lvgl_port_ctx.lvgl_task.handle, &woken);
+    }
+    return woken == pdTRUE;
 }
 #endif
+
+/* Called by LVGL in a loop while a flush is in flight. Sleep until the
+ * transfer-done callback above notifies us, with a timeout so a missed
+ * notification only costs a tick and never hangs the task. */
+static void lvgl_port_flush_wait_callback(lv_disp_drv_t *drv)
+{
+    (void)drv;
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20));
+}
 
 static void lvgl_port_flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {

@@ -30,6 +30,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
+#include "board.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -124,12 +125,25 @@ static bool sd_ready(void)
         return true;
     if (!bsp_sdcard_is_inserted())
         return false;
+    board_sdcard_power(true);
     if (bsp_sdcard_init_default() != ESP_OK) {
         ESP_LOGE(TAG, "Card is in but would not mount");
+        board_sdcard_power(false);
         return false;
     }
     s_mounted = true;
     return true;
+}
+
+/// Let go of the card and cut its power. Mounting again on the next click
+/// costs a moment, and a card sitting idle in a powered slot costs the
+/// battery the whole time in between.
+static void sd_release(void)
+{
+    if (s_mounted)
+        bsp_sdcard_deinit_default();
+    s_mounted = false;
+    board_sdcard_power(false);
 }
 
 /// Highest REC%05u.WAV already on the card, plus one. FAT here is 8.3 only,
@@ -198,10 +212,21 @@ static void notify_state(bool recording)
 static void reader_task(void *arg)
 {
     (void)arg;
+    bool held = false;   /* the codec, for as long as we are pulling from it */
     for (;;) {
         if (!atomic_load(&s_pulling)) {
+            /* the reader is the one inside bsp_i2s_read(), so the reader is
+             * the one to let the codec go, never the writer from outside */
+            if (held) {
+                board_codec_release();
+                held = false;
+            }
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
+        }
+        if (!held) {
+            board_codec_acquire();
+            held = true;
         }
 
         size_t got = 0;
@@ -251,6 +276,7 @@ static void record(void)
     }
 
     atomic_store(&s_pulling, false);
+    xTaskNotifyGive(s_reader_task);   /* in case it is parked between reads */
 
     /* A click clears s_want itself, and one that lands while we are closing
      * up should start the next recording rather than be swallowed here. So
@@ -270,12 +296,7 @@ static void record(void)
     }
 
     wav_close((uint32_t)total);
-    if (card_gave_up) {
-        /* it may simply have been pulled out: drop the mount so the next
-         * click goes and looks for a card again */
-        bsp_sdcard_deinit_default();
-        s_mounted = false;
-    }
+    sd_release();   /* the next click mounts afresh, and finds a pulled card gone */
     sound_set_muted(false);
     notify_state(false);
     xSemaphoreGive(s_done);

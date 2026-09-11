@@ -3,10 +3,10 @@ menu "Mochi"
     config MOCHI_DEEP_SLEEP_TIMEOUT_SEC
         int "Deep sleep inactivity timeout (seconds)"
         range 30 3600
-        default 300
+        default 60
         help
             Seconds of inactivity before the device enters deep sleep.
-            Default is 300 (5 minutes).
+            Default is 60 (1 minute). A press of the knob button wakes it.
 
     config MOCHI_REC_MAX_SEC
         int "Maximum recording length (seconds)"

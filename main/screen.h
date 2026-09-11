@@ -12,6 +12,10 @@ void screen_init(void);
 /// Register a callback invoked on screen tap (e.g. to reset inactivity timer).
 void screen_set_tap_cb(void (*cb)(void));
 
+/// Somebody did something to the Watcher: a button press, say. Brings the
+/// screen out of its idle tier, where the backlight runs dimmer.
+void screen_activity(void);
+
 /// Report a knob detent (+1 clockwise, -1 anti) to zoom the pond. Safe to
 /// call from any task; the zoom is applied from the LVGL task.
 void screen_knob(int dir);

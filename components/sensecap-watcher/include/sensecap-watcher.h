@@ -305,6 +305,7 @@ void bsp_set_btn_long_release_cb(void (*cb)(void));
 
 esp_err_t bsp_lcd_brightness_set(int brightness_percent);
 esp_lcd_panel_handle_t bsp_lcd_get_panel_handle(void);
+esp_lcd_panel_io_handle_t bsp_lcd_get_panel_io_handle(void);
 esp_lcd_touch_handle_t bsp_lcd_get_touch_handle(void);
 
 lv_disp_t *bsp_lvgl_init(void);

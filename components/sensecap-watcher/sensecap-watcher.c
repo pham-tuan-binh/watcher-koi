@@ -772,6 +772,11 @@ esp_lcd_panel_handle_t bsp_lcd_get_panel_handle()
     return panel_handle;
 }
 
+esp_lcd_panel_io_handle_t bsp_lcd_get_panel_io_handle()
+{
+    return panel_io_handle;
+}
+
 esp_lcd_touch_handle_t bsp_lcd_get_touch_handle()
 {
     return tp_handle;

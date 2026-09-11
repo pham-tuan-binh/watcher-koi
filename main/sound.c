@@ -42,6 +42,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "sensecap-watcher.h"
+#include "board.h"
 #include "sound.h"
 
 static const char *TAG = "sound";
@@ -367,20 +368,36 @@ static void render_block(bool fade)
 static void audio_task(void *arg)
 {
     (void)arg;
-    bsp_codec_volume_set(MASTER_VOLUME, NULL);
 
     int tail = 0;
+    bool powered = false;
     for (;;) {
         sound_t kind;
 
-        /* nothing sounding and the room has gone quiet: sleep until poked */
+        /* nothing sounding and the room has gone quiet: let go of the codec
+         * and sleep until poked */
         if (!voices_active() && tail <= 0) {
+            if (powered) {
+                board_codec_release();
+                powered = false;
+            }
             if (xQueueReceive(s_queue, &kind, portMAX_DELAY) != pdTRUE)
                 continue;
             voice_start(kind);
         }
         while (xQueueReceive(s_queue, &kind, 0) == pdTRUE)
             voice_start(kind);
+
+        if (!powered) {
+            /* wake the codec, then a block of silence so the amplifier has
+             * settled before the first sample it is asked to make */
+            board_codec_acquire();
+            bsp_codec_volume_set(MASTER_VOLUME, NULL);
+            memset(s_block, 0, sizeof s_block);
+            size_t n;
+            bsp_i2s_write(s_block, sizeof s_block, &n, 200);
+            powered = true;
+        }
 
         bool fade = false;
         if (atomic_load(&s_muted)) {
