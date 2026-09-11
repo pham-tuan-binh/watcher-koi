@@ -38,6 +38,13 @@ void pond_get_population(int *koi, int *pads, int *motes);
 /// pond's day still until it is switched off again.
 void pond_set_recording(bool on);
 
+/// Run the pond's day fast, for a demo: the hour steps on every couple of
+/// seconds instead of every dwell, the weather steps with it so every sky
+/// gets its turn, and the water, the koi and the pads move at speed to
+/// match. Turning it on moves the day on straight away. Recording still
+/// holds the day still, fast or not.
+void pond_set_timelapse(bool on);
+
 /// The scene on screen: the hour ("dusk", or "listening" while recording)
 /// and the sky ("clear", "rain", ...). For logging.
 const char *pond_hour_name(void);

@@ -59,6 +59,25 @@ static void screen_press_cb(lv_event_t *e)
         s_tap_cb();
 }
 
+/// A finger left on the glass runs the pond's day fast, and lifting it puts
+/// the day back to its own pace. LVGL calls the press a long one after its
+/// long-press time, so a tap is still a tap and only a hold counts.
+static void screen_hold_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    bool held = code == LV_EVENT_LONG_PRESSED ||
+                code == LV_EVENT_LONG_PRESSED_REPEAT;
+
+    pond_set_timelapse(held);
+
+    /* A finger on the glass is somebody there, the same as a tap is, and
+     * the repeat is the only word we get while it stays down: without it a
+     * long enough hold would idle the Watcher into deep sleep underneath
+     * the demo it is running. */
+    if (s_tap_cb)
+        s_tap_cb();
+}
+
 void screen_init(void)
 {
     lvgl_port_lock(0);
@@ -68,6 +87,10 @@ void screen_init(void)
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(scr, screen_press_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(scr, screen_hold_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(scr, screen_hold_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
+    lv_obj_add_event_cb(scr, screen_hold_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(scr, screen_hold_cb, LV_EVENT_PRESS_LOST, NULL);
 
     pond_init(scr);
     lv_timer_create(backlight_cb, 200, NULL);

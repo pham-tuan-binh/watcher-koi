@@ -220,11 +220,22 @@ static const hour_t REC_HOUR = {
  * runs nearer 49 ms, and counting frames made every dwell 22% long. */
 #define DWELL_US ((int64_t)CONFIG_MOCHI_SCENE_DWELL_SEC * 1000000)
 
+/* Fast forward, which a finger held on the glass turns on. The day steps on
+ * every couple of seconds instead of every dwell, with a crossfade short
+ * enough to finish before the next one starts, and the water runs at speed
+ * underneath it so the pond reads as a time lapse rather than as a slide
+ * show of itself. Twelve scenes, about half a minute, and you have seen
+ * every hour and every sky. */
+#define TIMELAPSE_DWELL_US ((int64_t)2400000)
+#define FADE_FAST_FRAMES   28
+#define TIMELAPSE_STEPS    3      /* passes of world motion per drawn frame */
+
 static look_t s_look;          /* what is being rendered right now */
 static look_t s_look_from, s_look_to;
 static int s_fade_at, s_fade_frames;
 static int s_hour, s_sky;
 static bool s_recording;
+static bool s_timelapse;
 static int64_t s_scene_due;
 
 static uint8_t mix(uint8_t a, uint8_t b, int t)
@@ -1191,9 +1202,21 @@ static int sky_pick(void)
 static void scene_advance(void)
 {
     s_hour = (s_hour + 1) % HOUR_COUNT;
-    s_sky = sky_pick();
-    look_retarget(FADE_SKY_FRAMES);
+
+    /* Fast forward walks the skies in order instead of rolling for them.
+     * Six hours against four skies come back around together every twelve
+     * scenes, so a hold long enough gets you all of both, and a demo never
+     * waits on a dice roll to show you the rain. */
+    s_sky = s_timelapse ? (s_sky + 1) % SKY_COUNT : sky_pick();
+
+    look_retarget(s_timelapse ? FADE_FAST_FRAMES : FADE_SKY_FRAMES);
     ESP_LOGI(TAG, "Scene: %s, %s", HOURS[s_hour].name, WEATHER[s_sky].name);
+}
+
+/// How long the scene on screen holds before the day moves on.
+static int64_t scene_dwell(void)
+{
+    return s_timelapse ? TIMELAPSE_DWELL_US : DWELL_US;
 }
 
 /// Hold the current scene for its dwell, then move the day on. Recording
@@ -1202,15 +1225,16 @@ static void scene_advance(void)
 static void scene_tick(void)
 {
     int64_t now = esp_timer_get_time();
+    int64_t dwell = scene_dwell();
 
-    if (DWELL_US == 0 || s_recording) {
-        s_scene_due = now + DWELL_US;
+    if (dwell == 0 || s_recording) {
+        s_scene_due = now + dwell;
         return;
     }
     if (now < s_scene_due)
         return;
 
-    s_scene_due = now + DWELL_US;
+    s_scene_due = now + dwell;
     scene_advance();
 }
 
@@ -1289,6 +1313,22 @@ static void blit(void)
     }
 }
 
+/// One extra pass of world motion, with nothing drawn: what fast forward
+/// spends its extra time on. Only the things that move. Rain, the scene
+/// clock and everything that makes a noise stay at one pass a frame, so
+/// running fast never turns the ambience into a stutter of birds.
+static void world_substep(void)
+{
+    s_frame++;
+    for (int i = 0; i < s_koi_count; i++)
+        koi_update(&s_koi[i]);
+    ripples_update();
+    for (int i = 0; i < s_pad_count; i++)
+        pad_update(&s_pads[i], i);
+    for (int i = 0; i < s_mote_count; i++)
+        mote_update(&s_motes[i]);
+}
+
 static void pond_step(void)
 {
     s_frame++;
@@ -1314,6 +1354,10 @@ static void pond_step(void)
         sound_play(SOUND_DISTANT);
         s_next_distant = (uint16_t)(220 + rnd(420));
     }
+
+    if (s_timelapse)
+        for (int i = 1; i < TIMELAPSE_STEPS; i++)
+            world_substep();
 
     camera_update();
     draw_water();
@@ -1490,6 +1534,24 @@ void pond_set_recording(bool on)
         return;
     s_recording = on;
     look_retarget(FADE_REC_FRAMES);
+}
+
+void pond_set_timelapse(bool on)
+{
+    if (on == s_timelapse)
+        return;
+    s_timelapse = on;
+
+    /* Move the day on the instant the hold takes, so the pond answers the
+     * finger rather than sitting on the rest of a dwell it had already
+     * started. Letting go just leaves the scene where the fast forward
+     * left it, with a full dwell in hand. A recording holds the day still
+     * whatever the finger is doing, so it does not get this one either. */
+    if (on && !s_recording)
+        scene_advance();
+
+    s_scene_due = esp_timer_get_time() + scene_dwell();
+    ESP_LOGI(TAG, "Fast forward %s", on ? "on" : "off");
 }
 
 const char *pond_hour_name(void)

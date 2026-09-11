@@ -34,6 +34,7 @@ idf.py flash monitor
 | | |
 | --- | --- |
 | **Tap the screen** | A ripple lands where your finger did, with a wet plop. Three rings spread out and every koi swims over to see what fell in. |
+| **Hold the screen** | Fast forward. The day runs at speed under your finger, an hour every couple of seconds, stepping the weather along with it. Let go and it carries on from wherever it got to. |
 | **Turn the knob** | Zoom, six steps. Wide open you get the whole pond. Closer in, the camera picks a koi and drifts after it. |
 | **Click the button** | The pond turns red and starts recording. Click again to save the WAV to the card. |
 | **Press the button** | Wakes it from sleep. |
@@ -49,6 +50,8 @@ Left alone it keeps going. The koi wander, the lily pads drift, a fish noses the
 </p>
 
 Six hours run in order: dawn, morning, noon, afternoon, dusk, night. A sky is rolled on each one, weighted towards clear. The pond opens on a random hour, so waking the Watcher is not always dawn. `MOCHI_SCENE_DWELL_SEC` sets how long a scene holds (default 180, giving a full day in about 18 minutes). The GIF above is a time lapse. The real crossfade takes six seconds.
+
+If eighteen minutes is longer than you want to wait, hold a finger on the glass. The pond fast forwards: an hour every two and a half seconds, the water and the koi moving at speed to match, and the weather stepping on in order rather than rolling for itself, so a hold of half a minute gets you every hour against every sky. Let go and the day picks up where the fast forward left it, at its own pace again. Recording still holds the day still, finger or no finger.
 
 <p align="center">
   <img src="docs/day.png" width="900" alt="the same instant of the same pond at all six hours">
